@@ -8,14 +8,28 @@ import { collection, doc, getDoc, getDocs, query, where } from "firebase/firesto
 import { onAuthStateChanged } from "firebase/auth";
 import { auth, db } from "@/lib/firebase";
 
-const NAV_MENUS = {
-  student: [
-    { label: "Overview", href: "/dashboard" },
-    { label: "Subjects", href: "/catalog" },
-    { label: "Schedule", href: "/schedule" },
-    { label: "Academic Records", href: "/ledger" },
-  ],
-};
+const STUDENT_LINKS = [
+  {
+    label: "Overview",
+    href: "/dashboard",
+    icon: "M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6",
+  },
+  {
+    label: "Subjects",
+    href: "/catalog",
+    icon: "M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253",
+  },
+  {
+    label: "Schedule",
+    href: "/schedule",
+    icon: "M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z",
+  },
+  {
+    label: "Academic Records",
+    href: "/ledger",
+    icon: "M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z",
+  },
+];
 
 const YEAR_ORDER = ["1st Year", "2nd Year", "3rd Year", "4th Year"];
 const TERM_ORDER = ["1st Trimester", "2nd Trimester", "3rd Trimester"];
@@ -35,6 +49,23 @@ type Row = {
 type TermBlock = { term: string; rows: Row[] };
 type YearBlock = { year: string; terms: TermBlock[] };
 
+function Icon({ path, className = "h-5 w-5" }: { path: string; className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.75}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <path d={path} />
+    </svg>
+  );
+}
+
 // Lower is better; 3.0 and below counts as passed (same rule as before)
 const gradeNumber = (g?: string) => {
   const n = parseFloat(g || "");
@@ -46,7 +77,7 @@ const isPassing = (g?: string) => {
 };
 
 function GradeBadge({ status, grade }: { status: Status; grade?: string }) {
-  const base = "inline-flex items-center border px-2 py-1 text-xs font-bold";
+  const base = "inline-flex items-center border px-2 py-1 text-xs font-bold whitespace-nowrap";
   if (status === "Taken") {
     return (
       <span
@@ -82,7 +113,9 @@ export default function AcademicLedgerPage() {
 
   const [role, setRole] = useState<string | null>(null);
   const [name, setName] = useState<string | null>(null);
+  const [studentNo, setStudentNo] = useState<string>("");
   const [userId, setUserId] = useState<string | null>(null);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const [program, setProgram] = useState<string | null>(null);
   const [curriculum, setCurriculum] = useState<any | null>(null);
@@ -93,7 +126,12 @@ export default function AcademicLedgerPage() {
   const [baseLoaded, setBaseLoaded] = useState(false);
   const [enlistLoaded, setEnlistLoaded] = useState(false);
 
-  // 1. Verify role and resolve the user id (same rule as the catalog and schedule pages)
+  // Close mobile menu when route changes
+  useEffect(() => {
+    setMobileMenuOpen(false);
+  }, [pathname]);
+
+  // 1. Verify role and resolve the user id
   useEffect(() => {
     const storedRole = localStorage.getItem("mock_user_role");
     if (!storedRole || storedRole !== "student") {
@@ -101,10 +139,14 @@ export default function AcademicLedgerPage() {
       return;
     }
     setRole(storedRole);
-    setName(localStorage.getItem("mock_user_name"));
+
+    const storedName = localStorage.getItem("mock_user_name");
+    const storedId = localStorage.getItem("mock_user_id");
+    setName(storedName && storedName !== "undefined" ? storedName : "Student");
+    if (storedId && storedId !== "undefined") setStudentNo(storedId);
 
     const unsubscribe = onAuthStateChanged(auth, (user) => {
-      setUserId(user ? user.uid : localStorage.getItem("mock_user_id") || "mock-student-id-123");
+      setUserId(user ? user.uid : storedId || "mock-student-id-123");
     });
     return () => unsubscribe();
   }, [router]);
@@ -112,19 +154,20 @@ export default function AcademicLedgerPage() {
   // 2. Student record, curriculum, subject catalog and grades
   useEffect(() => {
     if (!role) return;
-    const studentNo = localStorage.getItem("mock_user_id");
+    const storedStudentNo = localStorage.getItem("mock_user_id");
 
     (async () => {
       try {
         const [subjectsSnap, studentSnap] = await Promise.all([
           getDocs(collection(db, "subjects")),
-          studentNo ? getDoc(doc(db, "students", studentNo)) : Promise.resolve(null),
+          storedStudentNo ? getDoc(doc(db, "students", storedStudentNo)) : Promise.resolve(null),
         ]);
         setSubjects(subjectsSnap.docs.map((d) => d.data()));
 
-        const prog = studentSnap && studentSnap.exists()
-          ? studentSnap.data().program || studentSnap.data().academic?.program || null
-          : null;
+        const prog =
+          studentSnap && studentSnap.exists()
+            ? studentSnap.data().program || studentSnap.data().academic?.program || null
+            : null;
         setProgram(prog);
 
         if (prog) {
@@ -132,8 +175,10 @@ export default function AcademicLedgerPage() {
           setCurriculum(cSnap.empty ? null : cSnap.docs[0].data());
         }
 
-        if (studentNo) {
-          const gSnap = await getDocs(query(collection(db, "grades"), where("studentNo", "==", studentNo)));
+        if (storedStudentNo) {
+          const gSnap = await getDocs(
+            query(collection(db, "grades"), where("studentNo", "==", storedStudentNo))
+          );
           setGrades(gSnap.docs.map((d) => d.data()));
         }
       } catch (error) {
@@ -211,8 +256,12 @@ export default function AcademicLedgerPage() {
 
   const allRows = years.flatMap((y) => y.terms.flatMap((t) => t.rows));
   const totalUnits = allRows.reduce((t, r) => t + r.units, 0);
-  const earnedUnits = allRows.filter((r) => r.status === "Taken" && isPassing(r.grade)).reduce((t, r) => t + r.units, 0);
-  const enrolledUnits = allRows.filter((r) => r.status === "Enrolled" || r.status === "In Progress").reduce((t, r) => t + r.units, 0);
+  const earnedUnits = allRows
+    .filter((r) => r.status === "Taken" && isPassing(r.grade))
+    .reduce((t, r) => t + r.units, 0);
+  const enrolledUnits = allRows
+    .filter((r) => r.status === "Enrolled" || r.status === "In Progress")
+    .reduce((t, r) => t + r.units, 0);
   const gwa = weightedGwa(allRows);
 
   function handleLogout() {
@@ -225,10 +274,15 @@ export default function AcademicLedgerPage() {
 
   if (!role || !baseLoaded || !enlistLoaded)
     return (
-      <div className="flex min-h-screen items-center justify-center bg-white">
+      <div className="flex min-h-dvh items-center justify-center bg-white">
         <div className="flex items-center gap-3 text-emerald-900 text-sm font-semibold">
           <div className="h-5 w-1.5 bg-emerald-700 animate-pulse" />
-          <svg className="animate-spin h-5 w-5 text-emerald-700" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+          <svg
+            className="animate-spin h-5 w-5 text-emerald-700"
+            xmlns="http://www.w3.org/2000/svg"
+            fill="none"
+            viewBox="0 0 24 24"
+          >
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
           </svg>
@@ -238,23 +292,47 @@ export default function AcademicLedgerPage() {
     );
 
   return (
-    <div className="flex flex-col md:flex-row min-h-screen bg-[#F8FAF9] text-zinc-900 font-sans">
-      {/* Sidebar */}
-      <aside className="w-full md:w-64 shrink-0 border-b md:border-b-0 md:border-r border-emerald-900/15 bg-white">
-        <div className="flex flex-col h-full p-4 md:p-6">
-          <div className="flex items-center justify-between mb-4 md:mb-8 pb-4 border-b border-emerald-900/10">
-            <div className="flex items-center gap-3">
-              <Image src="/logo/dlsau.png" alt="DLSAU logo" width={40} height={40} className="h-10 w-10 object-contain" priority />
+    <div className="flex flex-col md:flex-row min-h-dvh w-full bg-[#F8FAF9] text-zinc-900 font-sans">
+      {/* Sticky Viewport-Locked Sidebar */}
+      <aside className="sticky top-0 z-40 w-full md:w-64 md:h-dvh shrink-0 border-b md:border-b-0 md:border-r border-emerald-900/15 bg-white">
+        <div className="flex flex-col h-full px-4 py-3 md:p-6">
+          {/* Brand Header */}
+          <div className="flex items-center justify-between md:mb-8 md:pb-4 md:border-b md:border-emerald-900/10">
+            <Link href="/dashboard" className="flex items-center gap-3 group focus:outline-none">
+              <Image
+                src="/logo/dlsau.png"
+                alt="DLSAU logo"
+                width={40}
+                height={40}
+                className="h-9 w-9 md:h-10 md:w-10 object-contain transition-transform duration-150 group-hover:scale-105"
+                priority
+              />
               <div>
-                <span className="block font-bold tracking-tight text-emerald-950 leading-none">PATHWAYS</span>
-                <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-700">DLSAU Portal</span>
+                <span className="block font-bold tracking-tight text-emerald-950 leading-none group-hover:text-emerald-700 transition-colors">
+                  PATHWAYS
+                </span>
+                <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-700">
+                  DLSAU Portal
+                </span>
               </div>
-            </div>
+            </Link>
+
+            {/* Mobile Hamburger Button */}
             <button
-              onClick={handleLogout}
-              className="md:hidden border border-emerald-800 px-3 py-1.5 text-xs font-bold text-emerald-900 hover:bg-emerald-50"
+              type="button"
+              onClick={() => setMobileMenuOpen((prev) => !prev)}
+              aria-label={mobileMenuOpen ? "Close navigation menu" : "Open navigation menu"}
+              aria-expanded={mobileMenuOpen}
+              className="md:hidden flex h-9 w-9 items-center justify-center border border-emerald-900/20 text-emerald-950 hover:bg-emerald-50 transition-colors"
             >
-              Sign Out
+              <Icon
+                path={
+                  mobileMenuOpen
+                    ? "M6 18L18 6M6 6l12 12"
+                    : "M4 6h16M4 12h16M4 18h16"
+                }
+                className="h-5 w-5"
+              />
             </button>
           </div>
 
@@ -263,41 +341,57 @@ export default function AcademicLedgerPage() {
             Student
           </div>
 
-          <nav className="flex flex-row md:flex-col flex-1 gap-1.5 overflow-x-auto no-scrollbar pb-2 md:pb-0">
-            {NAV_MENUS.student.map((item) => {
-              const isActive = pathname === item.href || pathname.startsWith(`${item.href}/`);
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  className={`relative shrink-0 px-3.5 py-2.5 text-sm font-semibold transition-all ${
-                    isActive ? "bg-emerald-900 text-white shadow-xs" : "text-zinc-600 hover:bg-emerald-50 hover:text-emerald-950"
-                  }`}
-                >
-                  {isActive && <span className="absolute left-0 top-0 bottom-0 w-1.5 bg-emerald-400" />}
-                  {item.label}
-                </Link>
-              );
-            })}
-          </nav>
+          {/* Navigation Drawer (Mobile) & Fixed Column (Desktop) */}
+          <div
+            className={`${
+              mobileMenuOpen ? "flex" : "hidden"
+            } md:flex flex-col flex-1 justify-between pt-3 pb-2 md:p-0 mt-3 md:mt-0 border-t md:border-t-0 border-emerald-900/10 overflow-y-auto`}
+          >
+            <nav className="flex flex-col gap-1.5">
+              {STUDENT_LINKS.map((item) => {
+                const isActive = pathname === item.href || pathname.startsWith(`${item.href}/`);
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    className={`relative flex items-center gap-3 px-3.5 py-2.5 text-sm font-semibold transition-all ${
+                      isActive
+                        ? "bg-emerald-900 text-white shadow-xs"
+                        : "text-zinc-600 hover:bg-emerald-50 hover:text-emerald-950"
+                    }`}
+                  >
+                    {isActive && <span className="absolute left-0 top-0 bottom-0 w-1.5 bg-emerald-400" />}
+                    <Icon path={item.icon} className="h-5 w-5 shrink-0" />
+                    <span>{item.label}</span>
+                  </Link>
+                );
+              })}
+            </nav>
 
-          <div className="hidden md:block border-t border-emerald-900/10 pt-5 mt-6">
-            <div className="mb-4 border-l-2 border-emerald-700 pl-3">
-              <p className="text-sm font-bold text-zinc-900 truncate">{name}</p>
-              <p className="text-xs font-medium capitalize text-emerald-800">{role}</p>
+            <div className="border-t border-emerald-900/10 pt-4 mt-4 md:pt-5 md:mt-6">
+              <div className="mb-4 border-l-2 border-emerald-700 pl-3">
+                <p className="text-sm font-bold text-zinc-900 truncate">{name}</p>
+                <p className="text-xs font-mono font-medium text-emerald-800">
+                  {studentNo || "Student"}
+                </p>
+              </div>
+              <button
+                onClick={handleLogout}
+                className="flex w-full items-center justify-center gap-2 border border-emerald-900/20 bg-emerald-50/50 px-4 py-2.5 text-xs font-bold uppercase tracking-wider text-emerald-950 transition-colors hover:bg-emerald-900 hover:text-white"
+              >
+                <Icon
+                  path="M17 16l4-4m0 0l-4-4m4 4H9m4 4v1a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h6a2 2 0 012 2v1"
+                  className="h-4 w-4"
+                />
+                <span>Sign Out</span>
+              </button>
             </div>
-            <button
-              onClick={handleLogout}
-              className="flex w-full items-center justify-center border border-emerald-900/20 bg-emerald-50/50 px-4 py-2 text-xs font-bold uppercase tracking-wider text-emerald-950 transition-colors hover:bg-emerald-900 hover:text-white"
-            >
-              Sign Out
-            </button>
           </div>
         </div>
       </aside>
 
-      {/* Main */}
-      <main className="flex-1 overflow-y-auto">
+      {/* Main Content (Scrolls Naturally) */}
+      <main className="flex-1 min-w-0">
         <div className="h-2 w-full bg-emerald-900 flex">
           <div className="h-full w-32 bg-emerald-600" />
           <div className="h-full w-12 bg-emerald-400" />
@@ -305,7 +399,9 @@ export default function AcademicLedgerPage() {
 
         <div className="mx-auto w-full max-w-6xl p-4 sm:p-8 lg:p-10">
           <header className="mb-6 border border-emerald-900/15 border-l-4 border-l-emerald-800 bg-white px-6 py-5 shadow-xs">
-            <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-emerald-950">Academic Records</h1>
+            <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-emerald-950">
+              Academic Records
+            </h1>
             <p className="mt-1 text-sm text-zinc-500">
               {program ? `${program} · ` : ""}Your grades and progress through the curriculum.
             </p>
@@ -315,7 +411,9 @@ export default function AcademicLedgerPage() {
             <div className="border border-emerald-900/15 bg-white px-6 py-16 text-center shadow-xs">
               <div className="mx-auto mb-3 h-3 w-12 bg-emerald-800/20" />
               <p className="text-sm font-semibold text-zinc-700">
-                {program ? "No curriculum has been set up for your program yet." : "We couldn't find your student record."}
+                {program
+                  ? "No curriculum has been set up for your program yet."
+                  : "We couldn't find your student record."}
               </p>
             </div>
           ) : (
@@ -325,12 +423,21 @@ export default function AcademicLedgerPage() {
                 {[
                   { label: "Units Earned", value: `${earnedUnits} / ${totalUnits}`, accent: "bg-emerald-800" },
                   { label: "Current Load", value: `${enrolledUnits} units`, accent: "bg-emerald-600" },
-                  { label: "Subjects Passed", value: allRows.filter((r) => r.status === "Taken" && isPassing(r.grade)).length, accent: "bg-sky-600" },
+                  {
+                    label: "Subjects Passed",
+                    value: allRows.filter((r) => r.status === "Taken" && isPassing(r.grade)).length,
+                    accent: "bg-sky-600",
+                  },
                   { label: "GWA", value: gwa === null ? "—" : gwa.toFixed(2), accent: "bg-emerald-950" },
                 ].map((c) => (
-                  <div key={c.label} className="relative overflow-hidden border border-emerald-900/10 bg-white p-4 shadow-xs">
+                  <div
+                    key={c.label}
+                    className="relative overflow-hidden border border-emerald-900/10 bg-white p-4 shadow-xs"
+                  >
                     <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${c.accent}`} />
-                    <p className="pl-1 text-[11px] font-bold uppercase tracking-wider text-zinc-500">{c.label}</p>
+                    <p className="pl-1 text-[11px] font-bold uppercase tracking-wider text-zinc-500">
+                      {c.label}
+                    </p>
                     <p className="mt-2 pl-1 font-mono text-2xl font-bold text-emerald-950">{c.value}</p>
                   </div>
                 ))}
@@ -345,7 +452,9 @@ export default function AcademicLedgerPage() {
                       <div className="flex items-center justify-between border-b border-zinc-200 px-6 py-4">
                         <div className="flex items-center gap-3">
                           <div className="h-5 w-1.5 bg-emerald-800" />
-                          <h2 className="text-sm font-bold uppercase tracking-tight text-zinc-900">{yearBlock.year}</h2>
+                          <h2 className="text-sm font-bold uppercase tracking-tight text-zinc-900">
+                            {yearBlock.year}
+                          </h2>
                         </div>
                         <span className="font-mono text-xs font-bold text-zinc-500">{yearUnits} units</span>
                       </div>
@@ -355,7 +464,7 @@ export default function AcademicLedgerPage() {
                           const termUnits = termBlock.rows.reduce((t, r) => t + r.units, 0);
                           const termGwa = weightedGwa(termBlock.rows);
                           return (
-                            <div key={termBlock.term} className="p-5">
+                            <div key={termBlock.term} className="p-4 sm:p-5">
                               <div className="mb-3 flex items-center justify-between bg-emerald-950/[0.04] px-3 py-2 text-[11px] font-bold uppercase tracking-wider text-emerald-950">
                                 <span>{termBlock.term}</span>
                                 <span className="font-mono">
@@ -366,26 +475,31 @@ export default function AcademicLedgerPage() {
                                 <table className="w-full text-left text-sm">
                                   <thead>
                                     <tr className="border-b border-zinc-200 text-[11px] uppercase tracking-wider text-zinc-400">
-                                      <th className="pb-2 font-bold">Code</th>
-                                      <th className="pb-2 font-bold">Description</th>
-                                      <th className="pb-2 text-center font-bold">Units</th>
-                                      <th className="pb-2 text-right font-bold">Status / Grade</th>
+                                      <th className="pb-2 pr-4 font-bold">Code</th>
+                                      <th className="pb-2 pr-4 font-bold">Description</th>
+                                      <th className="pb-2 px-2 text-center font-bold">Units</th>
+                                      <th className="pb-2 pl-2 text-right font-bold">Status / Grade</th>
                                     </tr>
                                   </thead>
                                   <tbody className="divide-y divide-zinc-100">
                                     {termBlock.rows.map((r) => (
                                       <tr key={r.code} className="transition-colors hover:bg-emerald-50/40">
-                                        <td className="py-3 pr-4 font-bold text-zinc-900">{r.code}</td>
-                                        <td className="py-3 pr-4">
-                                          <p className={r.missing ? "italic text-zinc-400" : "text-zinc-800"}>{r.title}</p>
+                                        <td className="py-3 pr-4 font-bold text-zinc-900 whitespace-nowrap">
+                                          {r.code}
+                                        </td>
+                                        <td className="py-3 pr-4 min-w-[200px]">
+                                          <p className={r.missing ? "italic text-zinc-400" : "text-zinc-800"}>
+                                            {r.title}
+                                          </p>
                                           {r.prereq && (
                                             <p className="mt-0.5 text-[11px] text-zinc-500">
-                                              Prerequisite: <span className="font-bold text-amber-700">{r.prereq}</span>
+                                              Prerequisite:{" "}
+                                              <span className="font-bold text-amber-700">{r.prereq}</span>
                                             </p>
                                           )}
                                         </td>
-                                        <td className="py-3 text-center font-mono">{r.units}</td>
-                                        <td className="py-3 text-right">
+                                        <td className="py-3 px-2 text-center font-mono">{r.units}</td>
+                                        <td className="py-3 pl-2 text-right">
                                           <GradeBadge status={r.status} grade={r.grade} />
                                         </td>
                                       </tr>

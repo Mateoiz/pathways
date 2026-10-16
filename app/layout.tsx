@@ -13,22 +13,28 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-           title: "PATHWAYS - DLSAU",
-           description: "PATHWAYS - DLSAU",
-           icons: {
-             icon: [{ url: "/logo/dlsau.png", type: "image/png" }],
-             shortcut: "/logo/dlsau.png",
-             apple: "/logo/dlsau.png",
-           },
-         };
+  title: "PATHWAYS - DLSAU",
+  description: "PATHWAYS - DLSAU Student & Admin Portal",
+  icons: {
+    icon: [{ url: "/logo/dlsau.png", type: "image/png" }],
+    shortcut: "/logo/dlsau.png",
+    apple: "/logo/dlsau.png",
+  },
+};
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${geistSans.variable} ${geistMono.variable} antialiased`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-dvh bg-zinc-50 text-zinc-900 flex flex-col">
+        {children}
+      </body>
     </html>
   );
 }
