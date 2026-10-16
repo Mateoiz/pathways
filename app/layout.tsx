@@ -13,9 +13,14 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "PATHWAYS - DLSAU",
-  description: "PATHWAYS - DLSAU",
-};
+           title: "PATHWAYS - DLSAU",
+           description: "PATHWAYS - DLSAU",
+           icons: {
+             icon: [{ url: "/logo/dlsau.png", type: "image/png" }],
+             shortcut: "/logo/dlsau.png",
+             apple: "/logo/dlsau.png",
+           },
+         };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (

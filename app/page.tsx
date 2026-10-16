@@ -2,22 +2,26 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import Image from "next/image";
+import { doc, getDoc, collection, query, where, getDocs } from "firebase/firestore";
+import { db } from "@/lib/firebase";
 
-const MOCK_USERS: Record<string, { role: string; name: string }> = {
-  "2023-12345": { role: "student", name: "Ice Matthew Ramirez" },
-  "registrar@dlsau.edu.ph": { role: "registrar", name: "Registrar Office" },
-  "admin@dlsau.edu.ph": { role: "admin", name: "System Admin" },
+// Where each role lands after signing in
+const ROLE_REDIRECTS: Record<string, string> = {
+  student: "/dashboard",
+  admin: "/admin/students",
+  registrar: "/dashboard",
 };
 
 function validateIdentifier(value: string): string {
   if (!value) return "This field is required.";
-  const isStudentNum = /^\d{4}-\d{5}$/.test(value);
+  // DLSAU student number format: YYYY-NN-NNNNNN (e.g., 2024-00-000890)
+  const isStudentNum = /^\d{4}-\d{2}-\d{6}$/.test(value);
   const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
   if (!isStudentNum && !isEmail)
-    return "Enter a valid student number (e.g. 2023-12345) or email.";
+    return "Enter a valid student number (e.g. 2024-00-000890) or email.";
   return "";
 }
-
 function validatePassword(value: string): string {
   if (!value) return "Password is required.";
   if (value.length < 6) return "Password must be at least 6 characters.";
@@ -73,181 +77,341 @@ export default function LoginPage() {
     setLoading(true);
     setSubmitError("");
 
-    // Simulate async auth check
-    await new Promise((r) => setTimeout(r, 600));
+    try {
+      let userData = null;
 
-    const user = MOCK_USERS[identifier];
-    if (user && password === "password123") {
-      localStorage.setItem("mock_user_role", user.role);
-      localStorage.setItem("mock_user_name", user.name);
-      router.push("/dashboard");
-    } else {
+      if (identifier.includes("@")) {
+        // Staff accounts live in the "users" collection
+        const q = query(collection(db, "users"), where("email", "==", identifier));
+        const snapshot = await getDocs(q);
+
+        if (!snapshot.empty) {
+          userData = snapshot.docs[0].data();
+        } else {
+          // Fallback accounts so you don't get locked out
+          if (identifier === "admin@dlsau.edu.ph") {
+            userData = { role: "admin", name: "System Admin" };
+          } else if (identifier === "registrar@dlsau.edu.ph") {
+            userData = { role: "registrar", name: "Registrar Office" };
+          }
+        }
+      } else {
+        // Students: document ID is the student number
+        const docRef = doc(db, "students", identifier);
+        const docSnap = await getDoc(docRef);
+
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          userData = {
+            ...data,
+            name: `${data.firstName} ${data.lastName}`,
+            role: "student",
+          };
+        }
+      }
+
+      // Mocked password check (no Firebase Auth yet)
+      if (userData && password === "password123") {
+        localStorage.setItem("mock_user_role", userData.role);
+        localStorage.setItem("mock_user_name", userData.name);
+        localStorage.setItem("mock_user_id", identifier);
+
+        const destination = ROLE_REDIRECTS[userData.role] || "/dashboard";
+        router.push(destination);
+      } else {
+        setSubmitError("Incorrect student number, email, or password.");
+        setLoading(false);
+      }
+    } catch (error) {
+      console.error("Login Error:", error);
+      setSubmitError("Can't connect right now. Please try again.");
       setLoading(false);
-      setSubmitError(
-        MOCK_USERS[identifier]
-          ? "Incorrect password. Please try again."
-          : "No account found for that student number or email."
-      );
     }
   }
 
   const isFormValid = !validateIdentifier(identifier) && !validatePassword(password);
 
+  const inputClass = (hasError: boolean) =>
+    `w-full border bg-zinc-50/50 px-3.5 py-3 text-sm text-zinc-900 placeholder:text-zinc-400 outline-none transition-all ${
+      hasError
+        ? "border-red-400 focus:border-red-500 focus:ring-1 focus:ring-red-400"
+        : "border-zinc-300 focus:border-emerald-800 focus:bg-white focus:ring-1 focus:ring-emerald-800"
+    }`;
+
   return (
-    <div className="flex min-h-screen flex-col lg:flex-row bg-white font-sans dark:bg-black">
-      
-      {/* ── LEFT: BRANDING PANEL (Desktop Only) ── */}
-      <div className="relative hidden lg:flex lg:w-[45%] xl:w-1/2 flex-col justify-between overflow-hidden bg-zinc-50 p-12 dark:bg-zinc-950 border-r border-zinc-200 dark:border-white/[.08]">
-        {/* Blueprint Background */}
-        <div className="absolute inset-0 z-0 bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:24px_24px] [mask-image:radial-gradient(ellipse_80%_80%_at_50%_20%,#000_50%,transparent_100%)]" />
-        
-        <div className="relative z-10 mt-12">
-          <div className="mb-6 flex h-16 w-16 items-center justify-center rounded-2xl bg-black text-white shadow-xl dark:bg-white dark:text-black">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-8 h-8">
-              <path d="M12 3L1 9l4 2.18v6L12 21l7-3.82v-6l2-1.09V17h2V9L12 3zm6.82 6L12 12.72 5.18 9 12 5.28 18.82 9zM17 15.99l-5 2.73-5-2.73v-3.72L12 15l5-2.73v3.72z"/>
-            </svg>
-          </div>
-          <h1 className="text-4xl lg:text-5xl font-bold tracking-tight text-zinc-950 dark:text-zinc-50">
-            PATHWAYS
-          </h1>
-          <p className="mt-6 max-w-md text-lg text-zinc-600 dark:text-zinc-400 leading-relaxed">
-            DLSAU's official student enrollment system. Engineered for speed, clarity, and reliability.
-          </p>
+    <div className="flex min-h-screen flex-col lg:flex-row bg-[#F8FAF9] text-zinc-900 font-sans">
+      {/* ── LEFT: BRANDING PANEL (Desktop only) ── */}
+      <div className="relative hidden lg:flex lg:w-[45%] xl:w-1/2 flex-col overflow-hidden bg-emerald-900 text-white">
+        {/* Top geometric strip */}
+<Image
+          src="/images/campus.jpg"
+          alt=""
+          fill
+          priority
+          sizes="50vw"
+          className="object-cover opacity-30 grayscale mix-blend-luminosity"
+        />
+
+        {/* Fade: solid green at the bottom and left, photo shows at the top right */}
+        <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-emerald-900 via-emerald-900/70 to-emerald-900/10" />
+        <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-emerald-900/80 via-transparent to-transparent" />
+
+        {/* Ghost letters, cropped by the panel edge */}
+        <div
+          aria-hidden="true"
+          className="pointer-events-none select-none absolute -left-10 -bottom-16 font-black leading-[0.8] tracking-tighter text-white/[0.06] text-[16rem] xl:text-[20rem]"
+        >
+          DLS
+          <br />
+          AU
         </div>
 
-        <div className="relative z-10 text-sm text-zinc-500 font-medium">
-          © 2026 De La Salle Araneta University
+        {/* Thin triangle lattice */}
+        <svg
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 h-full w-full"
+          style={{
+            maskImage: "radial-gradient(ellipse 90% 80% at 85% 20%, #000 20%, transparent 85%)",
+            WebkitMaskImage: "radial-gradient(ellipse 90% 80% at 85% 20%, #000 20%, transparent 85%)",
+          }}
+        >
+          <defs>
+            <pattern id="tri-lattice" width="40" height="69.28" patternUnits="userSpaceOnUse">
+              <path
+                d="M0 0H40 M0 34.64H40 M0 0L20 34.64L40 0 M0 69.28L20 34.64L40 69.28"
+                fill="none"
+                stroke="white"
+                strokeWidth="0.6"
+                strokeOpacity="0.18"
+              />
+            </pattern>
+          </defs>
+          <rect width="100%" height="100%" fill="url(#tri-lattice)" />
+        </svg>
+
+        {/* Larger outline triangles */}
+        <svg
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 h-full w-full"
+          viewBox="0 0 600 900"
+          preserveAspectRatio="xMidYMid slice"
+          fill="none"
+          stroke="white"
+          strokeWidth="1"
+        >
+          <polygon points="420,120 540,330 300,330" strokeOpacity="0.35" />
+          <polygon points="420,170 500,310 340,310" strokeOpacity="0.2" />
+          <polygon points="120,560 220,730 20,730" strokeOpacity="0.25" />
+          <polygon points="470,640 560,800 380,800" strokeOpacity="0.3" />
+          <polygon points="250,40 290,110 210,110" strokeOpacity="0.4" />
+        </svg>
+
+        {/* Decorative rectangles */}
+        <div className="pointer-events-none absolute -right-10 top-24 h-48 w-72 border-2 border-emerald-700/40 bg-emerald-800/30" />
+        <div className="pointer-events-none absolute right-32 bottom-0 h-24 w-48 bg-emerald-800/50 border-t border-l border-emerald-600/30" />
+        <div className="pointer-events-none absolute right-10 bottom-16 h-10 w-10 bg-emerald-500/20 border border-emerald-400/30" />
+
+        <div className="relative z-10 flex flex-1 flex-col justify-between p-12">
+          <div className="mt-12 flex items-start gap-5">
+            <div className="mt-1 h-24 w-2 shrink-0 bg-white" />
+            <div>
+              <div className="mb-6 inline-flex h-20 w-20 items-center justify-center bg-white p-2 shadow-lg border-l-4 border-emerald-400">
+                <Image
+                  src="/logo/dlsau.png"
+                  alt="DLSAU logo"
+                  width={64}
+                  height={64}
+                  className="h-16 w-16 object-contain"
+                  priority
+                />
+              </div>
+              <div className="mb-3 inline-flex items-center gap-2 bg-emerald-950/60 border border-emerald-700 px-2.5 py-1 text-[11px] font-bold uppercase tracking-widest text-emerald-200">
+                <span className="h-2 w-2 bg-emerald-400" />
+                De La Salle Araneta University
+              </div>
+              <h1 className="text-4xl xl:text-5xl font-bold tracking-tight text-white">
+                PATHWAYS
+              </h1>
+              <p className="mt-4 max-w-md text-base text-emerald-100/80 leading-relaxed">
+                Enrollment, clearance, and student records in one place.
+              </p>
+            </div>
+          </div>
+
+          <div className="text-sm text-emerald-200/70 font-medium">
+            © 2026 De La Salle Araneta University
+          </div>
         </div>
       </div>
 
-      {/* ── RIGHT: AUTH FORM PANEL (Full width on mobile) ── */}
-      <div className="flex w-full flex-col justify-center px-6 py-12 sm:px-12 lg:w-[55%] xl:w-1/2 lg:px-20 xl:px-32 relative bg-white dark:bg-black">
-        
-        <div className="mx-auto w-full max-w-sm lg:max-w-md">
-          {/* Mobile Header (Hidden on Desktop) */}
-          <div className="mb-10 flex flex-col items-start lg:hidden">
-            <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-black text-white shadow-lg dark:bg-white dark:text-black">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6">
-                <path d="M12 3L1 9l4 2.18v6L12 21l7-3.82v-6l2-1.09V17h2V9L12 3zm6.82 6L12 12.72 5.18 9 12 5.28 18.82 9zM17 15.99l-5 2.73-5-2.73v-3.72L12 15l5-2.73v3.72z"/>
-              </svg>
+      {/* ── RIGHT: SIGN IN FORM ── */}
+      <div className="flex w-full flex-col justify-center px-4 py-10 sm:px-12 lg:w-[55%] xl:w-1/2 lg:px-16">
+        <div className="mx-auto w-full max-w-md">
+          {/* Mobile header */}
+          <div className="mb-8 flex items-center gap-4 lg:hidden">
+            <div className="flex h-14 w-14 shrink-0 items-center justify-center border border-emerald-900/15 bg-white p-1.5 shadow-xs border-l-4 border-l-emerald-700">
+              <Image
+                src="/logo/dlsau.png"
+                alt="DLSAU logo"
+                width={44}
+                height={44}
+                className="h-11 w-11 object-contain"
+                priority
+              />
             </div>
-            <h1 className="text-2xl font-bold tracking-tight text-zinc-950 dark:text-zinc-50">PATHWAYS</h1>
-            <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">Your academic journey, simplified.</p>
+            <div>
+              <h1 className="text-2xl font-bold tracking-tight text-emerald-950 leading-none">
+                PATHWAYS
+              </h1>
+              <p className="mt-1 text-[10px] font-bold uppercase tracking-widest text-emerald-700">
+                De La Salle Araneta University
+              </p>
+            </div>
           </div>
 
-          <div className="mb-8 hidden lg:block">
-            <h2 className="text-2xl font-bold text-zinc-900 dark:text-zinc-100">Welcome back</h2>
-            <p className="mt-1 text-sm text-zinc-500">Please enter your credentials to access your portal.</p>
+          {/* Form card */}
+          <div className="border border-emerald-900/15 bg-white shadow-xs">
+            <div className="h-2 w-full bg-emerald-900 flex">
+              <div className="h-full w-20 bg-emerald-600" />
+              <div className="h-full w-8 bg-emerald-400" />
+            </div>
+
+            <div className="p-6 sm:p-8">
+              <div className="mb-6 flex items-center gap-3">
+                <div className="h-8 w-2 bg-emerald-800" />
+                <div>
+                  <h2 className="text-xl font-bold text-zinc-900">Sign In</h2>
+                  <p className="text-xs text-zinc-500">
+                    Use your student number or school email.
+                  </p>
+                </div>
+              </div>
+
+              {submitError && (
+                <div
+                  role="alert"
+                  className="mb-5 flex items-stretch border border-red-200 bg-white text-red-900"
+                >
+                  <div className="w-2 shrink-0 bg-red-600" />
+                  <div className="px-4 py-3 text-sm font-semibold">{submitError}</div>
+                </div>
+              )}
+
+              <form onSubmit={handleLogin} noValidate className="flex flex-col gap-5">
+                {/* Identifier */}
+                <div className="flex flex-col gap-1.5">
+                  <label
+                    htmlFor="identifier"
+                    className="text-xs font-bold uppercase tracking-wider text-zinc-700"
+                  >
+                    Student No. / Email
+                  </label>
+                  <input
+                    id="identifier"
+                    name="identifier"
+                    type="text"
+                    value={identifier}
+                    onChange={handleIdentifierChange}
+                    onBlur={handleIdentifierBlur}
+                    placeholder="e.g. 2024-00-000890"
+                    autoComplete="username"
+                    aria-invalid={!!identifierError}
+                    aria-describedby={identifierError ? "identifier-error" : undefined}
+                    className={inputClass(!!identifierError)}
+                  />
+                  {identifierError && (
+                    <p id="identifier-error" className="text-xs font-medium text-red-600">
+                      {identifierError}
+                    </p>
+                  )}
+                </div>
+
+                {/* Password */}
+                <div className="flex flex-col gap-1.5">
+                  <label
+                    htmlFor="password"
+                    className="text-xs font-bold uppercase tracking-wider text-zinc-700"
+                  >
+                    Password
+                  </label>
+                  <input
+                    id="password"
+                    name="password"
+                    type="password"
+                    value={password}
+                    onChange={handlePasswordChange}
+                    onBlur={handlePasswordBlur}
+                    placeholder="••••••••"
+                    autoComplete="current-password"
+                    aria-invalid={!!passwordError}
+                    aria-describedby={passwordError ? "password-error" : undefined}
+                    className={inputClass(!!passwordError)}
+                  />
+                  {passwordError && (
+                    <p id="password-error" className="text-xs font-medium text-red-600">
+                      {passwordError}
+                    </p>
+                  )}
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className={`mt-2 flex h-12 w-full items-center justify-center gap-2 px-4 text-sm font-bold transition-all ${
+                    loading
+                      ? "cursor-not-allowed bg-emerald-900/60 text-white border-l-4 border-emerald-400/60"
+                      : isFormValid
+                        ? "bg-emerald-900 text-white border-l-4 border-emerald-400 hover:bg-emerald-800 active:translate-y-px"
+                        : "cursor-not-allowed bg-zinc-200 text-zinc-500 border-l-4 border-zinc-300"
+                  }`}
+                >
+                  {loading ? (
+                    <>
+                      <svg
+                        className="animate-spin h-5 w-5"
+                        xmlns="http://www.w3.org/2000/svg"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                      >
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+                      </svg>
+                      Signing in...
+                    </>
+                  ) : (
+                    "Sign In"
+                  )}
+                </button>
+              </form>
+            </div>
           </div>
 
-          {submitError && (
-            <div
-              role="alert"
-              className="mb-6 rounded-lg bg-red-500/10 p-4 text-sm text-red-600 dark:text-red-400 border border-red-500/20 font-medium animate-in fade-in slide-in-from-top-2"
-            >
-              {submitError}
+          {/* Test accounts (development only) */}
+          {process.env.NODE_ENV === "development" && (
+            <div className="mt-6 border border-emerald-900/15 bg-white">
+              <div className="flex items-center gap-2 border-b border-zinc-200 px-4 py-2.5">
+                <span className="h-3 w-1 bg-emerald-700" />
+                <p className="text-[11px] font-bold uppercase tracking-wider text-emerald-950">
+                  Test Accounts
+                </p>
+              </div>
+              <ul className="flex flex-col gap-2 p-4 text-xs font-mono text-zinc-600">
+                <li className="flex justify-between items-center">
+                  <span>Student:</span>
+                  <span className="font-bold text-zinc-900">2024-00-000890</span>
+                </li>
+                <li className="flex justify-between items-center">
+                  <span>Admin:</span>
+                  <span className="font-bold text-zinc-900">admin@dlsau.edu.ph</span>
+                </li>
+                <li className="flex justify-between items-center border-t border-zinc-200 pt-2">
+                  <span>Password:</span>
+                  <span className="font-bold text-zinc-900">password123</span>
+                </li>
+              </ul>
             </div>
           )}
-
-          <form onSubmit={handleLogin} noValidate className="flex flex-col gap-5">
-            {/* Identifier field */}
-            <div className="flex flex-col gap-2">
-              <label htmlFor="identifier" className="text-xs font-semibold uppercase tracking-wider text-zinc-700 dark:text-zinc-300">
-                Student Number / Email
-              </label>
-              <input
-                id="identifier"
-                name="identifier"
-                type="text"
-                value={identifier}
-                onChange={handleIdentifierChange}
-                onBlur={handleIdentifierBlur}
-                placeholder="e.g. 2023-12345"
-                aria-invalid={!!identifierError}
-                aria-describedby={identifierError ? "identifier-error" : undefined}
-                className={`w-full rounded-lg border px-4 py-3 text-sm outline-none transition-all bg-zinc-50 dark:bg-zinc-900/50
-                  ${identifierError
-                    ? "border-red-400 focus:border-red-500 focus:ring-1 focus:ring-red-400"
-                    : "border-zinc-200 focus:border-black focus:ring-1 focus:ring-black dark:border-white/[.08] dark:focus:border-white dark:focus:ring-white"
-                  }`}
-              />
-              {identifierError ? (
-                <p id="identifier-error" className="text-xs text-red-500">{identifierError}</p>
-              ) : (
-                <p className="text-xs text-zinc-400 dark:text-zinc-500">
-                  Use your student number (2023-12345) or institutional email.
-                </p>
-              )}
-            </div>
-
-            {/* Password field */}
-            <div className="flex flex-col gap-2">
-              <label htmlFor="password" className="text-xs font-semibold uppercase tracking-wider text-zinc-700 dark:text-zinc-300">
-                Password
-              </label>
-              <input
-                id="password"
-                name="password"
-                type="password"
-                value={password}
-                onChange={handlePasswordChange}
-                onBlur={handlePasswordBlur}
-                placeholder="••••••••"
-                aria-invalid={!!passwordError}
-                aria-describedby={passwordError ? "password-error" : undefined}
-                className={`w-full rounded-lg border px-4 py-3 text-sm outline-none transition-all bg-zinc-50 dark:bg-zinc-900/50
-                  ${passwordError
-                    ? "border-red-400 focus:border-red-500 focus:ring-1 focus:ring-red-400"
-                    : "border-zinc-200 focus:border-black focus:ring-1 focus:ring-black dark:border-white/[.08] dark:focus:border-white dark:focus:ring-white"
-                  }`}
-              />
-              {passwordError && (
-                <p id="password-error" className="text-xs text-red-500">{passwordError}</p>
-              )}
-            </div>
-
-            <button
-              type="submit"
-              disabled={loading}
-              className={`mt-4 flex h-12 w-full items-center justify-center gap-2 rounded-lg px-4 font-medium text-white transition-all
-                ${loading
-                  ? "bg-zinc-400 cursor-not-allowed dark:bg-zinc-600"
-                  : isFormValid
-                    ? "bg-zinc-900 hover:bg-black hover:shadow-md active:scale-[0.98] dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white"
-                    : "bg-zinc-300 cursor-not-allowed text-zinc-500 dark:bg-zinc-800 dark:text-zinc-600"
-                }`}
-            >
-              {loading ? (
-                <>
-                  <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
-                  </svg>
-                  Authenticating…
-                </>
-              ) : (
-                "Sign In"
-              )}
-            </button>
-          </form>
-
-          {/* Dev helper */}
-          <div className="mt-8 rounded-lg bg-zinc-50 p-5 text-xs text-zinc-600 dark:bg-zinc-900/50 dark:text-zinc-400 border border-zinc-200 dark:border-white/[.05]">
-            <p className="font-semibold mb-3 text-zinc-900 dark:text-zinc-100 uppercase tracking-wider text-[10px]">Development Credentials</p>
-            <ul className="flex flex-col gap-2 font-mono">
-              <li className="flex justify-between items-center">
-                <span>Student:</span> <span className="font-semibold text-zinc-900 dark:text-zinc-200">2023-12345</span>
-              </li>
-              <li className="flex justify-between items-center">
-                <span>Registrar:</span> <span className="font-semibold text-zinc-900 dark:text-zinc-200">registrar@dlsau.edu.ph</span>
-              </li>
-              <li className="flex justify-between items-center border-t border-zinc-200 dark:border-zinc-800 pt-2 mt-1">
-                <span>Password:</span> <span className="font-semibold text-zinc-900 dark:text-zinc-200">password123</span>
-              </li>
-            </ul>
-          </div>
         </div>
-
       </div>
     </div>
   );

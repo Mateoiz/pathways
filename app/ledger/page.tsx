@@ -1,253 +1,408 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
+import Image from "next/image";
+import { collection, doc, getDoc, getDocs, query, where } from "firebase/firestore";
+import { onAuthStateChanged } from "firebase/auth";
+import { auth, db } from "@/lib/firebase";
 
 const NAV_MENUS = {
   student: [
     { label: "Overview", href: "/dashboard" },
-    { label: "Subject Catalog", href: "/catalog" },
-    { label: "Schedule Builder", href: "/schedule" },
-    { label: "Academic Grades", href: "/ledger" },
-  ]
+    { label: "Subjects", href: "/catalog" },
+    { label: "Schedule", href: "/schedule" },
+    { label: "Academic Records", href: "/ledger" },
+  ],
 };
 
-// 1. ADDED TYPESCRIPT DEFINITIONS HERE
-type Subject = {
+const YEAR_ORDER = ["1st Year", "2nd Year", "3rd Year", "4th Year"];
+const TERM_ORDER = ["1st Trimester", "2nd Trimester", "3rd Trimester"];
+
+type Status = "Taken" | "Enrolled" | "Added" | "In Progress" | "Pending";
+
+type Row = {
   code: string;
   title: string;
   units: number;
-  status: "Taken" | "Enrolled" | "In Progress" | "Pending";
-  grade?: string;  // Optional
-  prereq?: string; // Optional
+  status: Status;
+  grade?: string;
+  prereq?: string;
+  missing?: boolean; // code isn't in the subjects catalog
 };
 
-type TermBlock = {
-  term: string;
-  subjects: Subject[];
+type TermBlock = { term: string; rows: Row[] };
+type YearBlock = { year: string; terms: TermBlock[] };
+
+// Lower is better; 3.0 and below counts as passed (same rule as before)
+const gradeNumber = (g?: string) => {
+  const n = parseFloat(g || "");
+  return isNaN(n) ? null : n;
+};
+const isPassing = (g?: string) => {
+  const n = gradeNumber(g);
+  return n !== null && n > 0 && n <= 3.0;
 };
 
-type YearBlock = {
-  year: string;
-  terms: TermBlock[];
-};
-
-// 2. APPLIED THE TYPE TO THE CURRICULUM ARRAY
-const CURRICULUM: YearBlock[] = [
-  {
-    year: "1st Year",
-    terms: [
-      {
-        term: "1st Trimester",
-        subjects: [
-          { code: "CORE107", title: "UNDERSTANDING THE SELF", units: 3, grade: "2.5", status: "Taken" },
-          { code: "CORE106", title: "MATHEMATICS IN THE MODERN WORLD", units: 3, grade: "2.5", status: "Taken" },
-          { code: "PEED101", title: "PATHFIT-1", units: 2, grade: "3.0", status: "Taken" },
-          { code: "CC101A", title: "INTRODUCTION TO COMPUTING LEC", units: 2, grade: "3.5", status: "Taken" },
-          { code: "CC102A", title: "COMPUTER PROGRAMMING 1 LEC", units: 2, grade: "2.5", status: "Taken" },
-          { code: "NSTP101A", title: "NATIONAL SERVICE TRAINING PROGRAM 1", units: 3, grade: "4.0", status: "Taken" },
-          { code: "CC101B", title: "INTRODUCTION TO COMPUTING LAB", units: 1, grade: "3.5", status: "Taken" },
-          { code: "CC102B", title: "COMPUTER PROGRAMMING 1 LAB", units: 1, grade: "4.0", status: "Taken" },
-        ]
-      },
-      {
-        term: "2nd Trimester",
-        subjects: [
-          { code: "LSVI101", title: "THE SPIRIT OF FAITH", units: 3, grade: "4.0", status: "Taken" },
-          { code: "CORE109", title: "PANITIKAN NG PILIPINO", units: 3, grade: "3.0", status: "Taken" },
-          { code: "PEED102", title: "PATHFIT-2", units: 2, grade: "4.0", status: "Taken" },
-          { code: "CC103A", title: "COMPUTER PROGRAMMING 2 LEC", units: 2, grade: "2.5", status: "Taken" },
-          { code: "CC103B", title: "COMPUTER PROGRAMMING 2 LAB", units: 1, grade: "2.5", status: "Taken" },
-          { code: "NSTP102A", title: "NATIONAL SERVICE TRAINING PROGRAM 2", units: 3, grade: "4.0", status: "Taken" },
-          { code: "CORE105", title: "SCIENCE, TECHNOLOGY AND SOCIETY", units: 3, grade: "3.5", status: "Taken" },
-        ]
-      },
-      {
-        term: "3rd Trimester",
-        subjects: [
-          { code: "CORE101", title: "READINGS IN PHILIPPINE HISTORY", units: 3, grade: "2.5", status: "Taken" },
-          { code: "COEF362A", title: "LOGIC CIRCUITS AND DESIGN", units: 2, grade: "1.5", status: "Taken" },
-          { code: "PEED103", title: "PATHFIT-3", units: 2, grade: "3.5", status: "Taken" },
-          { code: "SDF104A", title: "OBJECT-ORIENTED PROGRAMMING LEC", units: 2, grade: "3.0", status: "Taken" },
-          { code: "SDF104B", title: "OBJECT-ORIENTED PROGRAMMING LAB", units: 1, grade: "3.0", status: "Taken" },
-          { code: "CC104A", title: "DATA STRUCTURE AND ALGORITHMS LEC", units: 2, grade: "1.5", status: "Taken" },
-          { code: "CC104B", title: "DATA STRUCTURE AND ALGORITHMS LAB", units: 1, grade: "3.0", status: "Taken" },
-          { code: "DS101A", title: "DISCRETE STRUCTURES 1", units: 3, grade: "2.0", status: "Taken" },
-        ]
-      }
-    ]
-  },
-  {
-    year: "2nd Year",
-    terms: [
-      {
-        term: "1st Trimester",
-        subjects: [
-          { code: "COEE402A", title: "TECHNOPRENEURSHIP", units: 3, grade: "2.5", status: "Taken" },
-          { code: "PEED104", title: "PATHFIT-4", units: 2, grade: "3.0", status: "Taken" },
-          { code: "AL101A", title: "ALGORITHM AND COMPLEXITY", units: 3, grade: "1.5", status: "Taken" },
-          { code: "CC105A", title: "INFORMATION MANAGEMENT LEC", units: 2, grade: "3.0", status: "Taken" },
-          { code: "CC105B", title: "INFORMATION MANAGEMENT LAB", units: 1, grade: "3.0", status: "Taken" },
-          { code: "LSVI102", title: "THE SPIRIT OF COMMUNION", units: 3, grade: "3.0", status: "Taken" },
-          { code: "DS102A", title: "DISCRETE STRUCTURES 2", units: 3, grade: "2.0", status: "Taken" },
-        ]
-      },
-      {
-        term: "2nd Trimester",
-        subjects: [
-          { code: "CC106A", title: "APP DEV AND EMERGING TECH LEC", units: 2, grade: "3.0", status: "Taken" },
-          { code: "AL102A", title: "AUTOMATA THEORY AND FORMAL LANGUAGE", units: 3, grade: "3.5", status: "Taken" },
-          { code: "AR101A", title: "ARCHITECTURE AND ORGANIZATION LEC", units: 2, grade: "2.0", status: "Taken" },
-          { code: "CN101A", title: "CSE 1 COMPUTATIONAL SCIENCE LEC", units: 2, grade: "3.5", status: "Taken" },
-          { code: "CORE110", title: "ETHICS", units: 3, grade: "2.5", status: "Taken" },
-          { code: "LSVI103", title: "THE SPIRIT OF SERVICE", units: 3, grade: "3.0", status: "Taken" },
-        ]
-      },
-      {
-        term: "3rd Trimester",
-        subjects: [
-          { code: "PD101A", title: "CSE 2 PARALLEL AND DISTRIBUTING COMPUTATION", units: 2, grade: "IP", status: "In Progress" },
-          { code: "SE101A", title: "SOFTWARE ENGINEERING 1 LEC", units: 2, grade: "IP", status: "In Progress" },
-          { code: "PL101A", title: "PROGRAMMING LANGUAGE LEC", units: 2, grade: "IP", status: "In Progress" },
-          { code: "COEN122A", title: "PROBABILITY AND STATISTICS", units: 3, grade: "IP", status: "In Progress" },
-          { code: "SP101A", title: "SOCIAL ISSUES AND PROFESSIONAL PRACTICE", units: 3, grade: "IP", status: "In Progress" },
-        ]
-      }
-    ]
-  },
-  {
-    year: "3rd Year",
-    terms: [
-      {
-        term: "1st Trimester",
-        subjects: [
-          { code: "SE102A", title: "SOFTWARE ENGINEERING 2 LEC", units: 2, status: "Enrolled" },
-          { code: "SE102B", title: "SOFTWARE ENGINEERING 2 LAB", units: 1, status: "Enrolled" },
-          { code: "COSC117C", title: "THESIS 1 / SOFTWARE DESIGN AND DEV.", units: 3, status: "Enrolled" },
-          { code: "OS101A", title: "OPERATING SYSTEM LEC", units: 2, status: "Enrolled" },
-          { code: "HCI101A", title: "HUMAN COMPUTER INTERACTION", units: 3, status: "Enrolled" },
-          { code: "GV101A", title: "CSE 3 GRAPHICS AND VISUAL COMPUTATION", units: 2, status: "Enrolled" },
-          { code: "CORE108", title: "FILIPINO", units: 3, status: "Enrolled" },
-        ]
-      },
-      {
-        term: "2nd Trimester",
-        subjects: [
-          { code: "NC101A", title: "NETWORK AND COMMUNICATIONS", units: 2, status: "Pending", prereq: "SE102A, OS101A" },
-          { code: "COSC122C", title: "THESIS 2", units: 3, status: "Pending", prereq: "COSC117C" },
-          { code: "IAS101A", title: "INFORMATION ASSURANCE AND SECURITY", units: 2, status: "Pending", prereq: "SE102A" },
-          { code: "FEL005C", title: "PRESENTATION SKILLS IN I.T.", units: 3, status: "Pending", prereq: "None" },
-          { code: "SE103A", title: "SOFTWARE ENGINEERING 3", units: 2, status: "Pending", prereq: "SE102A" },
-        ]
-      }
-    ]
-  }
-];
-
-function GradeBadge({ status, grade }: { status: string, grade?: string }) {
+function GradeBadge({ status, grade }: { status: Status; grade?: string }) {
+  const base = "inline-flex items-center border px-2 py-1 text-xs font-bold";
   if (status === "Taken") {
-    const isPassing = parseFloat(grade || "0") <= 3.0 && parseFloat(grade || "0") > 0;
     return (
-      <span className={`inline-flex items-center rounded-md px-2 py-1 text-xs font-bold border ${isPassing ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950 dark:text-emerald-400 dark:border-emerald-800' : 'bg-red-50 text-red-700 border-red-200'}`}>
+      <span
+        className={`${base} ${
+          isPassing(grade)
+            ? "border-emerald-300 bg-emerald-50 text-emerald-900"
+            : "border-red-300 bg-red-50 text-red-800"
+        }`}
+      >
         {grade}
       </span>
     );
   }
-  if (status === "Enrolled") return <span className="inline-flex items-center rounded-md bg-blue-50 px-2 py-1 text-xs font-bold text-blue-700 border border-blue-200 dark:bg-blue-950 dark:text-blue-400 dark:border-blue-800">ENROLLED</span>;
-  if (status === "In Progress") return <span className="inline-flex items-center rounded-md bg-amber-50 px-2 py-1 text-xs font-bold text-amber-700 border border-amber-200 dark:bg-amber-950 dark:text-amber-400 dark:border-amber-800">IN PROG</span>;
-  return <span className="inline-flex items-center rounded-md bg-zinc-100 px-2 py-1 text-xs font-bold text-zinc-500 border border-zinc-200 dark:bg-zinc-800 dark:text-zinc-400 dark:border-zinc-700">PENDING</span>;
+  if (status === "Enrolled")
+    return <span className={`${base} border-emerald-900 bg-emerald-900 text-white`}>ENROLLED</span>;
+  if (status === "Added")
+    return <span className={`${base} border-sky-300 bg-sky-50 text-sky-900`}>ADDED</span>;
+  if (status === "In Progress")
+    return <span className={`${base} border-amber-300 bg-amber-50 text-amber-900`}>IN PROGRESS</span>;
+  return <span className={`${base} border-zinc-200 bg-zinc-100 text-zinc-500`}>PENDING</span>;
+}
+
+function weightedGwa(rows: Row[]): number | null {
+  const graded = rows.filter((r) => r.status === "Taken" && gradeNumber(r.grade) !== null);
+  const units = graded.reduce((t, r) => t + r.units, 0);
+  if (units === 0) return null;
+  return graded.reduce((t, r) => t + r.units * gradeNumber(r.grade)!, 0) / units;
 }
 
 export default function AcademicLedgerPage() {
   const router = useRouter();
   const pathname = usePathname();
-  const [role, setRole] = useState<string | null>(null);
 
+  const [role, setRole] = useState<string | null>(null);
+  const [name, setName] = useState<string | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
+
+  const [program, setProgram] = useState<string | null>(null);
+  const [curriculum, setCurriculum] = useState<any | null>(null);
+  const [subjects, setSubjects] = useState<any[]>([]);
+  const [grades, setGrades] = useState<any[]>([]);
+  const [enlistments, setEnlistments] = useState<any[]>([]);
+
+  const [baseLoaded, setBaseLoaded] = useState(false);
+  const [enlistLoaded, setEnlistLoaded] = useState(false);
+
+  // 1. Verify role and resolve the user id (same rule as the catalog and schedule pages)
   useEffect(() => {
     const storedRole = localStorage.getItem("mock_user_role");
-    if (!storedRole || storedRole !== "student") router.push("/");
-    else setRole(storedRole);
+    if (!storedRole || storedRole !== "student") {
+      router.push("/");
+      return;
+    }
+    setRole(storedRole);
+    setName(localStorage.getItem("mock_user_name"));
+
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setUserId(user ? user.uid : localStorage.getItem("mock_user_id") || "mock-student-id-123");
+    });
+    return () => unsubscribe();
   }, [router]);
 
-  if (!role) return null;
+  // 2. Student record, curriculum, subject catalog and grades
+  useEffect(() => {
+    if (!role) return;
+    const studentNo = localStorage.getItem("mock_user_id");
+
+    (async () => {
+      try {
+        const [subjectsSnap, studentSnap] = await Promise.all([
+          getDocs(collection(db, "subjects")),
+          studentNo ? getDoc(doc(db, "students", studentNo)) : Promise.resolve(null),
+        ]);
+        setSubjects(subjectsSnap.docs.map((d) => d.data()));
+
+        const prog = studentSnap && studentSnap.exists()
+          ? studentSnap.data().program || studentSnap.data().academic?.program || null
+          : null;
+        setProgram(prog);
+
+        if (prog) {
+          const cSnap = await getDocs(query(collection(db, "curricula"), where("program", "==", prog)));
+          setCurriculum(cSnap.empty ? null : cSnap.docs[0].data());
+        }
+
+        if (studentNo) {
+          const gSnap = await getDocs(query(collection(db, "grades"), where("studentNo", "==", studentNo)));
+          setGrades(gSnap.docs.map((d) => d.data()));
+        }
+      } catch (error) {
+        console.error("Failed to load ledger data:", error);
+      } finally {
+        setBaseLoaded(true);
+      }
+    })();
+  }, [role]);
+
+  // 3. Current enlistments (so enrolled subjects show up)
+  useEffect(() => {
+    if (!userId) return;
+    (async () => {
+      try {
+        const snap = await getDocs(query(collection(db, "enlistments"), where("userId", "==", userId)));
+        setEnlistments(snap.docs.map((d) => d.data()));
+      } catch (error) {
+        console.error("Failed to load enlistments:", error);
+      } finally {
+        setEnlistLoaded(true);
+      }
+    })();
+  }, [userId]);
+
+  // ───────────── Build the ledger from Firestore data ─────────────
+  const years: YearBlock[] = useMemo(() => {
+    if (!curriculum?.terms) return [];
+
+    const subjectByCode = new Map(subjects.map((s) => [s.code, s]));
+    const gradeByCode = new Map(grades.map((g) => [g.code, g]));
+    const enlistByCode = new Map(enlistments.map((e) => [e.code, e]));
+
+    const buildRow = (code: string): Row => {
+      const s = subjectByCode.get(code);
+      const base = {
+        code,
+        title: s?.title ?? "Not in subject catalog",
+        units: s?.units ?? 0,
+        missing: !s,
+      };
+      const g = gradeByCode.get(code);
+      const e = enlistByCode.get(code);
+
+      if (g) {
+        const inProgress = g.status === "In Progress" || String(g.grade).toUpperCase() === "IP";
+        if (inProgress) return { ...base, status: "In Progress", grade: "IP" };
+        return { ...base, status: "Taken", grade: String(g.grade) };
+      }
+      if (e) {
+        const enrolled = e.status === "Enrolled" || e.source === "block";
+        return { ...base, status: enrolled ? "Enrolled" : "Added" };
+      }
+      return {
+        ...base,
+        status: "Pending",
+        prereq: s?.prereq && s.prereq !== "None" ? s.prereq : undefined,
+      };
+    };
+
+    const byYear = new Map<string, TermBlock[]>();
+    [...curriculum.terms]
+      .sort(
+        (a: any, b: any) =>
+          YEAR_ORDER.indexOf(a.year) - YEAR_ORDER.indexOf(b.year) ||
+          TERM_ORDER.indexOf(a.term) - TERM_ORDER.indexOf(b.term)
+      )
+      .forEach((t: any) => {
+        const block: TermBlock = { term: t.term, rows: (t.codes ?? []).map(buildRow) };
+        byYear.set(t.year, [...(byYear.get(t.year) ?? []), block]);
+      });
+
+    return Array.from(byYear.entries()).map(([year, terms]) => ({ year, terms }));
+  }, [curriculum, subjects, grades, enlistments]);
+
+  const allRows = years.flatMap((y) => y.terms.flatMap((t) => t.rows));
+  const totalUnits = allRows.reduce((t, r) => t + r.units, 0);
+  const earnedUnits = allRows.filter((r) => r.status === "Taken" && isPassing(r.grade)).reduce((t, r) => t + r.units, 0);
+  const enrolledUnits = allRows.filter((r) => r.status === "Enrolled" || r.status === "In Progress").reduce((t, r) => t + r.units, 0);
+  const gwa = weightedGwa(allRows);
+
+  function handleLogout() {
+    localStorage.removeItem("mock_user_role");
+    localStorage.removeItem("mock_user_name");
+    localStorage.removeItem("mock_user_id");
+    auth.signOut();
+    router.push("/");
+  }
+
+  if (!role || !baseLoaded || !enlistLoaded)
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-white">
+        <div className="flex items-center gap-3 text-emerald-900 text-sm font-semibold">
+          <div className="h-5 w-1.5 bg-emerald-700 animate-pulse" />
+          <svg className="animate-spin h-5 w-5 text-emerald-700" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+          </svg>
+          Loading records...
+        </div>
+      </div>
+    );
 
   return (
-    <div className="flex flex-col md:flex-row min-h-screen bg-zinc-50 text-zinc-950 dark:bg-black dark:text-zinc-50 font-sans">
-      <aside className="w-full md:w-64 shrink-0 border-b md:border-b-0 md:border-r border-zinc-200 bg-white dark:border-white/[.08] dark:bg-zinc-950">
+    <div className="flex flex-col md:flex-row min-h-screen bg-[#F8FAF9] text-zinc-900 font-sans">
+      {/* Sidebar */}
+      <aside className="w-full md:w-64 shrink-0 border-b md:border-b-0 md:border-r border-emerald-900/15 bg-white">
         <div className="flex flex-col h-full p-4 md:p-6">
-          <div className="flex items-center justify-between mb-4 md:mb-10">
+          <div className="flex items-center justify-between mb-4 md:mb-8 pb-4 border-b border-emerald-900/10">
             <div className="flex items-center gap-3">
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-black text-white dark:bg-white dark:text-black">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
-                  <path d="M12 3L1 9l4 2.18v6L12 21l7-3.82v-6l2-1.09V17h2V9L12 3z"/>
-                </svg>
+              <Image src="/logo/dlsau.png" alt="DLSAU logo" width={40} height={40} className="h-10 w-10 object-contain" priority />
+              <div>
+                <span className="block font-bold tracking-tight text-emerald-950 leading-none">PATHWAYS</span>
+                <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-700">DLSAU Portal</span>
               </div>
-              <span className="font-bold tracking-tight">PATHWAYS</span>
             </div>
+            <button
+              onClick={handleLogout}
+              className="md:hidden border border-emerald-800 px-3 py-1.5 text-xs font-bold text-emerald-900 hover:bg-emerald-50"
+            >
+              Sign Out
+            </button>
           </div>
-          <nav className="flex flex-row md:flex-col gap-2 overflow-x-auto no-scrollbar pb-2 md:pb-0">
-            {NAV_MENUS.student.map((item, idx) => {
-              const isActive = pathname === item.href;
+
+          <div className="hidden md:flex items-center gap-2 mb-3 text-[11px] font-bold uppercase tracking-wider text-zinc-400">
+            <span className="h-2.5 w-1 bg-emerald-700" />
+            Student
+          </div>
+
+          <nav className="flex flex-row md:flex-col flex-1 gap-1.5 overflow-x-auto no-scrollbar pb-2 md:pb-0">
+            {NAV_MENUS.student.map((item) => {
+              const isActive = pathname === item.href || pathname.startsWith(`${item.href}/`);
               return (
-                <Link key={idx} href={item.href} className={`shrink-0 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${isActive ? "bg-zinc-100 text-black dark:bg-white/[.08] dark:text-white" : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-white/[.05]"}`}>
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={`relative shrink-0 px-3.5 py-2.5 text-sm font-semibold transition-all ${
+                    isActive ? "bg-emerald-900 text-white shadow-xs" : "text-zinc-600 hover:bg-emerald-50 hover:text-emerald-950"
+                  }`}
+                >
+                  {isActive && <span className="absolute left-0 top-0 bottom-0 w-1.5 bg-emerald-400" />}
                   {item.label}
                 </Link>
               );
             })}
           </nav>
+
+          <div className="hidden md:block border-t border-emerald-900/10 pt-5 mt-6">
+            <div className="mb-4 border-l-2 border-emerald-700 pl-3">
+              <p className="text-sm font-bold text-zinc-900 truncate">{name}</p>
+              <p className="text-xs font-medium capitalize text-emerald-800">{role}</p>
+            </div>
+            <button
+              onClick={handleLogout}
+              className="flex w-full items-center justify-center border border-emerald-900/20 bg-emerald-50/50 px-4 py-2 text-xs font-bold uppercase tracking-wider text-emerald-950 transition-colors hover:bg-emerald-900 hover:text-white"
+            >
+              Sign Out
+            </button>
+          </div>
         </div>
       </aside>
 
-      <main className="flex-1 overflow-y-auto p-4 sm:p-8 lg:p-12">
-        <header className="mb-8">
-          <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Academic Ledger</h1>
-          <p className="mt-1 text-sm md:text-base text-zinc-500">Track your academic progress, grades, and curriculum completion.</p>
-        </header>
+      {/* Main */}
+      <main className="flex-1 overflow-y-auto">
+        <div className="h-2 w-full bg-emerald-900 flex">
+          <div className="h-full w-32 bg-emerald-600" />
+          <div className="h-full w-12 bg-emerald-400" />
+        </div>
 
-        <div className="flex flex-col gap-8">
-          {CURRICULUM.map((yearBlock, yIdx) => (
-            <div key={yIdx} className="rounded-xl border border-zinc-200 bg-white overflow-hidden dark:border-white/[.08] dark:bg-zinc-950">
-              <div className="bg-zinc-100/50 px-5 py-3 border-b border-zinc-200 dark:bg-zinc-900/50 dark:border-white/[.08]">
-                <h2 className="text-lg font-bold">{yearBlock.year}</h2>
-              </div>
-              
-              <div className="divide-y divide-zinc-200 dark:divide-white/[.08]">
-                {yearBlock.terms.map((termBlock, tIdx) => (
-                  <div key={tIdx} className="p-5">
-                    <h3 className="text-sm font-semibold text-zinc-500 uppercase tracking-wider mb-4">{termBlock.term}</h3>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-left text-sm">
-                        <thead>
-                          <tr className="text-zinc-400 dark:text-zinc-500 border-b border-zinc-100 dark:border-zinc-800/50">
-                            <th className="pb-2 font-medium">Code</th>
-                            <th className="pb-2 font-medium">Description</th>
-                            <th className="pb-2 font-medium text-center">Units</th>
-                            <th className="pb-2 font-medium text-right">Status / Grade</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800/50">
-                          {termBlock.subjects.map((sub, sIdx) => (
-                            <tr key={sIdx} className="hover:bg-zinc-50 dark:hover:bg-zinc-900/20 transition-colors">
-                              <td className="py-3 font-semibold pr-4">{sub.code}</td>
-                              <td className="py-3 pr-4">
-                                <p className="text-zinc-900 dark:text-zinc-100">{sub.title}</p>
-                                {sub.prereq && <p className="text-[10px] text-zinc-500 mt-0.5">Prereq: {sub.prereq}</p>}
-                              </td>
-                              <td className="py-3 text-center">{sub.units}</td>
-                              <td className="py-3 text-right">
-                                <GradeBadge status={sub.status} grade={sub.grade} />
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
+        <div className="mx-auto w-full max-w-6xl p-4 sm:p-8 lg:p-10">
+          <header className="mb-6 border border-emerald-900/15 border-l-4 border-l-emerald-800 bg-white px-6 py-5 shadow-xs">
+            <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-emerald-950">Academic Records</h1>
+            <p className="mt-1 text-sm text-zinc-500">
+              {program ? `${program} · ` : ""}Your grades and progress through the curriculum.
+            </p>
+          </header>
+
+          {years.length === 0 ? (
+            <div className="border border-emerald-900/15 bg-white px-6 py-16 text-center shadow-xs">
+              <div className="mx-auto mb-3 h-3 w-12 bg-emerald-800/20" />
+              <p className="text-sm font-semibold text-zinc-700">
+                {program ? "No curriculum has been set up for your program yet." : "We couldn't find your student record."}
+              </p>
+            </div>
+          ) : (
+            <>
+              {/* Summary */}
+              <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-4">
+                {[
+                  { label: "Units Earned", value: `${earnedUnits} / ${totalUnits}`, accent: "bg-emerald-800" },
+                  { label: "Current Load", value: `${enrolledUnits} units`, accent: "bg-emerald-600" },
+                  { label: "Subjects Passed", value: allRows.filter((r) => r.status === "Taken" && isPassing(r.grade)).length, accent: "bg-sky-600" },
+                  { label: "GWA", value: gwa === null ? "—" : gwa.toFixed(2), accent: "bg-emerald-950" },
+                ].map((c) => (
+                  <div key={c.label} className="relative overflow-hidden border border-emerald-900/10 bg-white p-4 shadow-xs">
+                    <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${c.accent}`} />
+                    <p className="pl-1 text-[11px] font-bold uppercase tracking-wider text-zinc-500">{c.label}</p>
+                    <p className="mt-2 pl-1 font-mono text-2xl font-bold text-emerald-950">{c.value}</p>
                   </div>
                 ))}
               </div>
-            </div>
-          ))}
+
+              <div className="flex flex-col gap-6">
+                {years.map((yearBlock) => {
+                  const yearRows = yearBlock.terms.flatMap((t) => t.rows);
+                  const yearUnits = yearRows.reduce((t, r) => t + r.units, 0);
+                  return (
+                    <section key={yearBlock.year} className="border border-emerald-900/15 bg-white shadow-xs">
+                      <div className="flex items-center justify-between border-b border-zinc-200 px-6 py-4">
+                        <div className="flex items-center gap-3">
+                          <div className="h-5 w-1.5 bg-emerald-800" />
+                          <h2 className="text-sm font-bold uppercase tracking-tight text-zinc-900">{yearBlock.year}</h2>
+                        </div>
+                        <span className="font-mono text-xs font-bold text-zinc-500">{yearUnits} units</span>
+                      </div>
+
+                      <div className="divide-y divide-zinc-200">
+                        {yearBlock.terms.map((termBlock) => {
+                          const termUnits = termBlock.rows.reduce((t, r) => t + r.units, 0);
+                          const termGwa = weightedGwa(termBlock.rows);
+                          return (
+                            <div key={termBlock.term} className="p-5">
+                              <div className="mb-3 flex items-center justify-between bg-emerald-950/[0.04] px-3 py-2 text-[11px] font-bold uppercase tracking-wider text-emerald-950">
+                                <span>{termBlock.term}</span>
+                                <span className="font-mono">
+                                  {termUnits} units{termGwa !== null && ` · GWA ${termGwa.toFixed(2)}`}
+                                </span>
+                              </div>
+                              <div className="overflow-x-auto">
+                                <table className="w-full text-left text-sm">
+                                  <thead>
+                                    <tr className="border-b border-zinc-200 text-[11px] uppercase tracking-wider text-zinc-400">
+                                      <th className="pb-2 font-bold">Code</th>
+                                      <th className="pb-2 font-bold">Description</th>
+                                      <th className="pb-2 text-center font-bold">Units</th>
+                                      <th className="pb-2 text-right font-bold">Status / Grade</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-zinc-100">
+                                    {termBlock.rows.map((r) => (
+                                      <tr key={r.code} className="transition-colors hover:bg-emerald-50/40">
+                                        <td className="py-3 pr-4 font-bold text-zinc-900">{r.code}</td>
+                                        <td className="py-3 pr-4">
+                                          <p className={r.missing ? "italic text-zinc-400" : "text-zinc-800"}>{r.title}</p>
+                                          {r.prereq && (
+                                            <p className="mt-0.5 text-[11px] text-zinc-500">
+                                              Prerequisite: <span className="font-bold text-amber-700">{r.prereq}</span>
+                                            </p>
+                                          )}
+                                        </td>
+                                        <td className="py-3 text-center font-mono">{r.units}</td>
+                                        <td className="py-3 text-right">
+                                          <GradeBadge status={r.status} grade={r.grade} />
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </section>
+                  );
+                })}
+              </div>
+            </>
+          )}
         </div>
       </main>
     </div>
