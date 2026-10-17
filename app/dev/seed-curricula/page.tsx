@@ -6,6 +6,7 @@
 import { useState } from "react";
 import { doc, setDoc, writeBatch } from "firebase/firestore";
 import { db } from "@/lib/firebase";
+import { assignSchedules, type Meeting } from "@/lib/autoSchedule";
 
 type TermEntry = { year: string; term: string; block: boolean; codes: string[] };
 
@@ -244,21 +245,32 @@ const CURRICULA = [
 
 export default function SeedCurriculaPage() {
   const [status, setStatus] = useState("");
+  const [warnings, setWarnings] = useState<string[]>([]);
 
   if (process.env.NODE_ENV !== "development") return null;
 
   async function seed() {
     setStatus("Writing curricula and BSA catalog...");
+    setWarnings([]);
     try {
-      // 1. Seed Curricula Definitions
+      // 1. Seed curriculum definitions
       for (const c of CURRICULA) {
         await setDoc(doc(db, "curricula", c.id), { program: c.program, terms: c.terms });
       }
 
-      // 2. Seed BSA Subjects into live catalog
-      for (let i = 0; i < BSA_SUBJECTS_CATALOG.length; i += 450) {
+      // 2. Fill in days/time for every BSA subject that doesn't have one yet.
+      //    Hand-entered times (2nd Year 1st Trimester) are kept as they are.
+      //    When the CS catalog exists, pass the SAME `assigned` map to its call so shared
+      //    GE codes (CORE101, CORE105, ...) keep a single time.
+      const assigned = new Map<string, Meeting[]>();
+      const { subjects: scheduled, warnings: warn } = assignSchedules(BSA_SUBJECTS_CATALOG, BSA_TERMS, assigned);
+      warn.forEach((w) => console.warn(w));
+      setWarnings(warn);
+
+      // 3. Write BSA subjects into the live catalog
+      for (let i = 0; i < scheduled.length; i += 450) {
         const batch = writeBatch(db);
-        const chunk = BSA_SUBJECTS_CATALOG.slice(i, i + 450);
+        const chunk = scheduled.slice(i, i + 450);
         chunk.forEach((subj) => {
           batch.set(
             doc(db, "subjects", subj.code),
@@ -268,7 +280,7 @@ export default function SeedCurriculaPage() {
               room: "TBA",
               days: "",
               time: "",
-              ...subj,
+              ...subj, // generated days/time override the empty defaults above
             },
             { merge: true }
           );
@@ -276,7 +288,9 @@ export default function SeedCurriculaPage() {
         await batch.commit();
       }
 
-      setStatus(`Done! Wrote ${CURRICULA.length} curricula and ${BSA_SUBJECTS_CATALOG.length} BSA catalog subjects.`);
+      setStatus(
+        `Done! Wrote ${CURRICULA.length} curricula and ${scheduled.length} BSA catalog subjects with times. ${warn.length} warning(s).`
+      );
     } catch (e) {
       console.error(e);
       setStatus("Failed. Check the console.");
@@ -287,7 +301,9 @@ export default function SeedCurriculaPage() {
     <div className="mx-auto max-w-xl p-10 font-sans">
       <h1 className="text-xl font-bold text-emerald-950">Seed Curricula & Catalog</h1>
       <p className="mt-2 text-sm text-zinc-600">
-        Writes <strong>BS Computer Science</strong> and <strong>BS Accountancy</strong> to the <code>curricula</code> collection, and provisions all {BSA_SUBJECTS_CATALOG.length} accountancy subjects with schedule times into <code>subjects</code>.
+        Writes <strong>BS Computer Science</strong> and <strong>BS Accountancy</strong> to the <code>curricula</code>{" "}
+        collection, and provisions all {BSA_SUBJECTS_CATALOG.length} accountancy subjects into <code>subjects</code>,
+        auto-assigning days and times to any subject that doesn&apos;t have one.
       </p>
       <button
         onClick={seed}
@@ -296,6 +312,13 @@ export default function SeedCurriculaPage() {
         Seed now
       </button>
       {status && <p className="mt-3 text-sm font-bold text-emerald-800">{status}</p>}
+      {warnings.length > 0 && (
+        <ul className="mt-3 flex flex-col gap-1 border border-amber-300 border-l-4 border-l-amber-500 bg-amber-50 p-3 text-xs text-amber-900">
+          {warnings.map((w, i) => (
+            <li key={i}>{w}</li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
