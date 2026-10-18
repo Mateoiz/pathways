@@ -4,7 +4,8 @@ import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { doc, setDoc, getDoc, collection, getDocs } from "firebase/firestore";
-import { db } from "@/lib/firebase";
+import { db, createAuthUserWithoutLoggingOut } from "@/lib/firebase";
+
 import AdminNavbar from "@/components/AdminNavbar";
 import { getAcademicConfig } from "@/lib/academicConfig";
 
@@ -327,13 +328,24 @@ export default function CreateStudentProfilePage() {
     }
   }
 
-  useEffect(() => {
+useEffect(() => {
     const storedRole = localStorage.getItem("mock_user_role");
     if (!storedRole || storedRole !== "admin") {
       router.push("/");
     } else {
       setRole(storedRole);
       generateNextStudentId();
+      getAcademicConfig().then((cfg) => {
+        setFormData((prev) => ({
+          ...prev,
+          academic: {
+            ...prev.academic,
+            schoolYearAdmitted: cfg.schoolYear,
+            semesterAdmitted: cfg.currentTerm,
+            maxUnits: String(cfg.maxUnitsDefault || 21),
+          },
+        }));
+      });
     }
   }, [router]);
 
@@ -427,7 +439,7 @@ if (group === "academic") {
     }));
   }
 
-  async function handleSubmit(e: React.FormEvent) {
+ async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
 
     if (!formData.personal.sex) {
@@ -447,10 +459,24 @@ if (group === "academic") {
         return;
       }
 
+      // Create live Firebase Authentication account without logging out Admin
+      const authLoginEmail = `${studentId}@dlsau.edu.ph`;
+      const defaultPassword = "password123";
+      let authUid = "";
+      try {
+        authUid = await createAuthUserWithoutLoggingOut(authLoginEmail, defaultPassword);
+      } catch (authErr: any) {
+        if (authErr?.code !== "auth/email-already-in-use") {
+          throw authErr;
+        }
+      }
+
       const now = new Date().toISOString();
 
-await setDoc(studentRef, {
+      await setDoc(studentRef, {
         ...formData,
+        ...(authUid ? { uid: authUid } : {}),
+        authEmail: authLoginEmail,
         studentId,
         firstName: formData.personal.firstName.trim(),
         lastName: formData.personal.lastName.trim(),
@@ -466,17 +492,16 @@ await setDoc(studentRef, {
         updatedAt: now,
       });
 
-      showToast("success", `Student no. ${studentId} added.`);
+      showToast("success", `Student ${studentId} created! (Default password: ${defaultPassword})`);
       setFormData(INITIAL_FORM_STATE);
       await generateNextStudentId();
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error creating student profile:", error);
-      showToast("error", "Couldn't save the student. Please try again.");
+      showToast("error", error?.message || "Couldn't save the student. Please try again.");
     } finally {
       setIsSubmitting(false);
     }
   }
-
   if (!role) return null;
 
   const { personal, contact, address, family, emergency, academic, previousSchool, health } = formData;
@@ -699,11 +724,17 @@ await setDoc(studentRef, {
                 <Field label="School Year Admitted">
                   <input required name="schoolYearAdmitted" value={academic.schoolYearAdmitted} onChange={handleInputChange("academic")} placeholder="2026-2027" className={INPUT_CLASS} />
                 </Field>
-                <Field label="Semester Admitted">
+<Field label="Semester Admitted">
                   <Select value={academic.semesterAdmitted} options={SEMESTERS} onChange={v => setField("academic", "semesterAdmitted", v)} />
                 </Field>
-                <Field label="Scholarship / Financial Aid" className="sm:col-span-3">
+                <Field label="Scholarship / Financial Aid">
                   <Select value={academic.scholarship} options={SCHOLARSHIPS} onChange={v => setField("academic", "scholarship", v)} />
+                </Field>
+                <Field label="Max Units per Term">
+                  <Select value={academic.maxUnits} options={["15", "18", "21", "23", "24"]} onChange={v => setField("academic", "maxUnits", v)} />
+                </Field>
+                <Field label="1st-Term Fixed Block Schedule" className="sm:col-span-2">
+                  <Select value={academic.blockEnrolled} options={["Yes", "No"]} onChange={v => setField("academic", "blockEnrolled", v)} />
                 </Field>
               </div>
             </Section>

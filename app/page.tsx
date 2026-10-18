@@ -4,8 +4,12 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import { doc, getDoc, collection, query, where, getDocs } from "firebase/firestore";
-import { signInWithEmailAndPassword, signOut, onAuthStateChanged } from "firebase/auth";
-import { auth, db } from "@/lib/firebase";
+import {
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  signOut,
+  onAuthStateChanged,
+} from "firebase/auth";import { auth, db } from "@/lib/firebase";
 
 // Where each role lands after signing in. Any role not listed here is not allowed in.
 const ROLE_REDIRECTS: Record<string, string> = {
@@ -53,20 +57,48 @@ function authErrorMessage(err: unknown): string {
   return "Incorrect student number, email, or password.";
 }
 
-// Runs after sign-in, so Firestore rules can require an authenticated user.
-async function loadProfile(cleanId: string): Promise<{ role: string; name: string } | null> {
+// Runs after sign-in, resolving profile from `users` (staff) or `students` (by Student ID or Email)
+async function loadProfile(
+  cleanId: string
+): Promise<{ role: string; name: string; studentId: string } | null> {
   if (cleanId.includes("@")) {
-    const snapshot = await getDocs(query(collection(db, "users"), where("email", "==", cleanId)));
-    if (snapshot.empty) return null;
-    const data = snapshot.docs[0].data();
-    return { role: String(data.role ?? ""), name: data.name || cleanId };
+    // 1. Check staff `users` collection
+    const staffSnap = await getDocs(
+      query(collection(db, "users"), where("email", "==", cleanId))
+    );
+    if (!staffSnap.empty) {
+      const data = staffSnap.docs[0].data();
+      return {
+        role: String(data.role ?? ""),
+        name: data.name || cleanId,
+        studentId: cleanId,
+      };
+    }
+
+    // 2. Check `students` collection by school email
+    const studentEmailSnap = await getDocs(
+      query(collection(db, "students"), where("email", "==", cleanId))
+    );
+    if (!studentEmailSnap.empty) {
+      const docSnap = studentEmailSnap.docs[0];
+      const data = docSnap.data();
+      return {
+        role: "student",
+        name: `${data.firstName ?? ""} ${data.lastName ?? ""}`.trim() || "Student",
+        studentId: data.studentId || docSnap.id,
+      };
+    }
+    return null;
   }
+
+  // 3. Look up by student number (e.g. 2026-00-000001)
   const snap = await getDoc(doc(db, "students", cleanId));
   if (!snap.exists()) return null;
   const data = snap.data();
   return {
     role: "student",
     name: `${data.firstName ?? ""} ${data.lastName ?? ""}`.trim() || "Student",
+    studentId: data.studentId || cleanId,
   };
 }
 
@@ -143,14 +175,41 @@ export default function LoginPage() {
     setLoading(true);
     setSubmitError("");
 
-    let signedIn = false;
+let signedIn = false;
     try {
-      // 1. Authenticate first. Students sign in with <student number>@dlsau.edu.ph
-      const authEmail = cleanId.includes("@") ? cleanId : `${cleanId}@dlsau.edu.ph`;
-      await signInWithEmailAndPassword(auth, authEmail, password);
-      signedIn = true;
+      // 1. Determine Auth login email (lookup student number if university email was entered)
+      let authEmail = cleanId.includes("@") ? cleanId : `${cleanId}@dlsau.edu.ph`;
 
-      // 2. Load their role and name (now that they're authenticated)
+      if (cleanId.includes("@")) {
+        const studentByEmail = await getDocs(
+          query(collection(db, "students"), where("email", "==", cleanId))
+        );
+        if (!studentByEmail.empty) {
+          const stData = studentByEmail.docs[0].data();
+          const targetId = stData.studentId || studentByEmail.docs[0].id;
+          authEmail = `${targetId}@dlsau.edu.ph`;
+        }
+      }
+try {
+        await signInWithEmailAndPassword(auth, authEmail, password);
+        signedIn = true;
+      } catch (signInErr: any) {
+        // If the account exists in Firestore (`users` or `students`) but hasn't been created
+        // in Firebase Authentication yet, auto-create their Firebase Auth login on first sign-in:
+        const existingProfile = await loadProfile(cleanId);
+        if (
+          existingProfile &&
+          (signInErr?.code === "auth/user-not-found" ||
+            signInErr?.code === "auth/invalid-credential")
+        ) {
+          await createUserWithEmailAndPassword(auth, authEmail, password);
+          signedIn = true;
+        } else {
+          throw signInErr;
+        }
+      }
+
+      // 2. Load profile and verify portal role
       const profile = await loadProfile(cleanId);
       if (!profile || !ROLE_REDIRECTS[profile.role]) {
         await signOut(auth);
@@ -164,7 +223,7 @@ export default function LoginPage() {
 
       localStorage.setItem("mock_user_role", profile.role);
       localStorage.setItem("mock_user_name", profile.name);
-      localStorage.setItem("mock_user_id", cleanId);
+      localStorage.setItem("mock_user_id", profile.studentId);
 
       router.push(ROLE_REDIRECTS[profile.role]);
     } catch (error) {

@@ -2,8 +2,7 @@
 
 import { useState } from "react";
 import { collection, doc, getDocs, setDoc, writeBatch } from "firebase/firestore";
-import { db } from "@/lib/firebase";
-
+import { db, createAuthUserWithoutLoggingOut } from "@/lib/firebase";
 type TermEntry = { year: string; term: string; block: boolean; codes: string[] };
 
 // 1. BS COMPUTER SCIENCE FLOWCHART
@@ -210,12 +209,70 @@ const CURRICULA = [
   { id: "bs-accountancy", program: "BS Accountancy", terms: BSA_TERMS },
   { id: "bsba-marketing-management", program: "BSBA Marketing Management", terms: MKTG_TERMS },
 ];
-
 export default function SeedCurriculaPage() {
   const [status, setStatus] = useState("");
   const [isRunning, setIsRunning] = useState(false);
 
   if (process.env.NODE_ENV !== "development") return null;
+
+  async function provisionLiveAuthAccounts() {
+    setIsRunning(true);
+    setStatus("Provisioning live Firebase Auth accounts for Admin, Registrar, and Students...");
+    let createdCount = 0;
+
+    try {
+      const staffAccounts = [
+        { email: "admin@dlsau.edu.ph", password: "password123", role: "admin", name: "System Administrator" },
+        { email: "registrar@dlsau.edu.ph", password: "password123", role: "registrar", name: "University Registrar" },
+      ];
+
+      for (const staff of staffAccounts) {
+        let uid = "";
+        try {
+          uid = await createAuthUserWithoutLoggingOut(staff.email, staff.password);
+          createdCount++;
+        } catch (err: any) {
+          if (err?.code !== "auth/email-already-in-use") console.warn(err);
+        }
+
+        await setDoc(
+          doc(db, "users", staff.email),
+          {
+            email: staff.email,
+            role: staff.role,
+            name: staff.name,
+            ...(uid ? { uid } : {}),
+            updatedAt: new Date().toISOString(),
+          },
+          { merge: true }
+        );
+      }
+
+      const studentsSnap = await getDocs(collection(db, "students"));
+      for (const stDoc of studentsSnap.docs) {
+        const data = stDoc.data();
+        const studentId = data.studentId || stDoc.id;
+        const authEmail = `${studentId}@dlsau.edu.ph`;
+
+        try {
+          const uid = await createAuthUserWithoutLoggingOut(authEmail, "password123");
+          await setDoc(doc(db, "students", stDoc.id), { uid, authEmail }, { merge: true });
+          createdCount++;
+        } catch (err: any) {
+          if (err?.code !== "auth/email-already-in-use") console.warn(err);
+        }
+      }
+
+      setStatus(
+        `Done! Provisioned ${createdCount} new Firebase Auth account(s). Log in with admin@dlsau.edu.ph / password123 or any student number / password123.`
+      );
+    } catch (error) {
+      console.error(error);
+      setStatus("Failed to provision Auth accounts. Make sure Email/Password Sign-In is enabled in Firebase Console.");
+    } finally {
+      setIsRunning(false);
+    }
+  }
 
   async function resetAndSeedSystem() {
     if (
@@ -371,13 +428,22 @@ for (const c of CURRICULA) {
         <p className="mt-2 text-sm text-zinc-600">
           Wipes old <code>enlistments</code>, force-overwrites all subject meeting times so <strong>BSCS1A</strong> (and all other blocks) have <strong>0 overlaps</strong>, and resets slots to <code>40 / 40</code>.
         </p>
-        <button
-          onClick={resetAndSeedSystem}
-          disabled={isRunning}
-          className="mt-5 border-l-4 border-red-400 bg-red-800 px-5 py-2.5 text-sm font-bold text-white hover:bg-red-700 disabled:opacity-50"
-        >
-          {isRunning ? "Fixing Schedules..." : "Wipe Enlistments & Force-Fix All Schedules"}
-        </button>
+<div className="mt-5 flex flex-col gap-3">
+          <button
+            onClick={resetAndSeedSystem}
+            disabled={isRunning}
+            className="w-full border-l-4 border-red-400 bg-red-800 px-5 py-2.5 text-left text-sm font-bold text-white hover:bg-red-700 disabled:opacity-50"
+          >
+            {isRunning ? "Working..." : "1. Wipe Enlistments & Force-Fix All Schedules"}
+          </button>
+          <button
+            onClick={provisionLiveAuthAccounts}
+            disabled={isRunning}
+            className="w-full border-l-4 border-emerald-400 bg-emerald-900 px-5 py-2.5 text-left text-sm font-bold text-white hover:bg-emerald-800 disabled:opacity-50"
+          >
+            {isRunning ? "Working..." : "2. Provision Live Firebase Auth (Admin, Registrar & Students)"}
+          </button>
+        </div>
         {status && (
           <p className="mt-4 border border-emerald-200 bg-emerald-50 p-3 text-xs font-bold text-emerald-900">
             {status}
