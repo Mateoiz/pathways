@@ -4,17 +4,17 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import { doc, getDoc, collection, query, where, getDocs } from "firebase/firestore";
-import { signInWithEmailAndPassword, onAuthStateChanged } from "firebase/auth";
+import { signInWithEmailAndPassword, signOut, onAuthStateChanged } from "firebase/auth";
 import { auth, db } from "@/lib/firebase";
 
-// Where each role lands after signing in
+// Where each role lands after signing in. Any role not listed here is not allowed in.
 const ROLE_REDIRECTS: Record<string, string> = {
   student: "/dashboard",
   admin: "/admin/students",
   registrar: "/dashboard",
 };
 
-const IS_DEV = process.env.NODE_ENV === "development";
+const SESSION_KEYS = ["mock_user_role", "mock_user_name", "mock_user_id"] as const;
 
 function normalizeIdentifier(raw: string): string {
   const trimmed = raw.trim();
@@ -38,6 +38,38 @@ function validatePassword(value: string): string {
   return "";
 }
 
+// Never reveal whether an account exists: wrong email and wrong password look the same.
+function authErrorMessage(err: unknown): string {
+  const code = (err as { code?: string })?.code ?? "";
+  if (code === "auth/too-many-requests") {
+    return "Too many attempts. Please wait a few minutes and try again.";
+  }
+  if (code === "auth/user-disabled") {
+    return "This account has been disabled. Please contact the Registrar's Office.";
+  }
+  if (code === "auth/network-request-failed" || !code.startsWith("auth/")) {
+    return "Can't connect right now. Please check your connection and try again.";
+  }
+  return "Incorrect student number, email, or password.";
+}
+
+// Runs after sign-in, so Firestore rules can require an authenticated user.
+async function loadProfile(cleanId: string): Promise<{ role: string; name: string } | null> {
+  if (cleanId.includes("@")) {
+    const snapshot = await getDocs(query(collection(db, "users"), where("email", "==", cleanId)));
+    if (snapshot.empty) return null;
+    const data = snapshot.docs[0].data();
+    return { role: String(data.role ?? ""), name: data.name || cleanId };
+  }
+  const snap = await getDoc(doc(db, "students", cleanId));
+  if (!snap.exists()) return null;
+  const data = snap.data();
+  return {
+    role: "student",
+    name: `${data.firstName ?? ""} ${data.lastName ?? ""}`.trim() || "Student",
+  };
+}
+
 export default function LoginPage() {
   const router = useRouter();
 
@@ -55,23 +87,17 @@ export default function LoginPage() {
   const [identifierTouched, setIdentifierTouched] = useState(false);
   const [passwordTouched, setPasswordTouched] = useState(false);
 
-  // Redirect automatically if already signed in
+  // Send already-signed-in users straight to their home page
   useEffect(() => {
-    const storedRole = localStorage.getItem("mock_user_role");
-    const storedId = localStorage.getItem("mock_user_id");
-
     const unsubscribe = onAuthStateChanged(auth, (user) => {
-      if (user && storedRole) {
-        router.replace(ROLE_REDIRECTS[storedRole] || "/dashboard");
+      const storedRole = localStorage.getItem("mock_user_role");
+      if (user && storedRole && ROLE_REDIRECTS[storedRole]) {
+        router.replace(ROLE_REDIRECTS[storedRole]);
         return;
       }
-      if (IS_DEV && storedRole && storedId) {
-        router.replace(ROLE_REDIRECTS[storedRole] || "/dashboard");
-        return;
-      }
+      if (!user) SESSION_KEYS.forEach((k) => localStorage.removeItem(k)); // clear stale data
       setCheckingSession(false);
     });
-
     return () => unsubscribe();
   }, [router]);
 
@@ -117,87 +143,36 @@ export default function LoginPage() {
     setLoading(true);
     setSubmitError("");
 
+    let signedIn = false;
     try {
-      let userData: { role: string; name: string; email?: string } | null = null;
+      // 1. Authenticate first. Students sign in with <student number>@dlsau.edu.ph
+      const authEmail = cleanId.includes("@") ? cleanId : `${cleanId}@dlsau.edu.ph`;
+      await signInWithEmailAndPassword(auth, authEmail, password);
+      signedIn = true;
 
-      // 1. Resolve user profile from Firestore
-      if (cleanId.includes("@")) {
-        const q = query(collection(db, "users"), where("email", "==", cleanId));
-        const snapshot = await getDocs(q);
-
-        if (!snapshot.empty) {
-          const docData = snapshot.docs[0].data();
-          userData = {
-            role: docData.role || "staff",
-            name: docData.name || cleanId,
-            email: cleanId,
-          };
-        } else if (IS_DEV) {
-          // Development-only fallback accounts
-          if (cleanId === "admin@dlsau.edu.ph") {
-            userData = { role: "admin", name: "System Admin", email: cleanId };
-          } else if (cleanId === "registrar@dlsau.edu.ph") {
-            userData = { role: "registrar", name: "Registrar Office", email: cleanId };
-          }
-        }
-      } else {
-        const docRef = doc(db, "students", cleanId);
-        const docSnap = await getDoc(docRef);
-
-        if (docSnap.exists()) {
-          const data = docSnap.data();
-          userData = {
-            role: "student",
-            name: `${data.firstName ?? ""} ${data.lastName ?? ""}`.trim() || "Student",
-            email: data.email || `${cleanId}@dlsau.edu.ph`,
-          };
-        }
-      }
-
-      if (!userData) {
-        setSubmitError("Incorrect student number, email, or password.");
+      // 2. Load their role and name (now that they're authenticated)
+      const profile = await loadProfile(cleanId);
+      if (!profile || !ROLE_REDIRECTS[profile.role]) {
+        await signOut(auth);
+        setSubmitError(
+          "Your account isn't set up for the portal yet. Please contact the Registrar's Office."
+        );
+        setPassword("");
         setLoading(false);
         return;
       }
 
-      // 2. Authenticate via Firebase Auth first, with Dev Mock Fallback in development
-      let authenticated = false;
-      const authEmail = userData.email || (cleanId.includes("@") ? cleanId : `${cleanId}@dlsau.edu.ph`);
+      localStorage.setItem("mock_user_role", profile.role);
+      localStorage.setItem("mock_user_name", profile.name);
+      localStorage.setItem("mock_user_id", cleanId);
 
-      try {
-        await signInWithEmailAndPassword(auth, authEmail, password);
-        authenticated = true;
-      } catch (firebaseErr: any) {
-        // Allow "password123" fallback ONLY in local development while migrating accounts
-        if (IS_DEV && password === "password123") {
-          authenticated = true;
-        }
-      }
-
-      if (authenticated) {
-        localStorage.setItem("mock_user_role", userData.role);
-        localStorage.setItem("mock_user_name", userData.name);
-        localStorage.setItem("mock_user_id", cleanId);
-
-        const destination = ROLE_REDIRECTS[userData.role] || "/dashboard";
-        router.push(destination);
-      } else {
-        setSubmitError("Incorrect student number, email, or password.");
-        setLoading(false);
-      }
+      router.push(ROLE_REDIRECTS[profile.role]);
     } catch (error) {
-      console.error("Login Error:", error);
-      setSubmitError("Can't connect right now. Please try again.");
+      if (signedIn) await signOut(auth).catch(() => {});
+      setSubmitError(authErrorMessage(error));
+      setPassword("");
       setLoading(false);
     }
-  }
-
-  function fillTestAccount(testId: string) {
-    setIdentifier(testId);
-    setPassword("password123");
-    setIdentifierError("");
-    setPasswordError("");
-    setSubmitError("");
   }
 
   const inputClass = (hasError: boolean) =>
@@ -210,9 +185,9 @@ export default function LoginPage() {
   if (checkingSession) {
     return (
       <div className="flex min-h-dvh items-center justify-center bg-[#F8FAF9]">
-        <div className="flex items-center gap-3 text-emerald-900 text-sm font-semibold">
+        <div role="status" className="flex items-center gap-3 text-emerald-900 text-sm font-semibold">
           <div className="h-5 w-1.5 bg-emerald-700 animate-pulse" />
-          <span>Checking session...</span>
+          <span>Loading...</span>
         </div>
       </div>
     );
@@ -235,7 +210,7 @@ export default function LoginPage() {
         <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-emerald-950 via-emerald-900/75 to-emerald-900/20" />
         <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-emerald-950/80 via-transparent to-transparent" />
 
-        {/* Subtle geometric lattice (cleaned up to a single background texture) */}
+        {/* Subtle geometric lattice */}
         <svg
           aria-hidden="true"
           className="pointer-events-none absolute inset-0 h-full w-full"
@@ -276,36 +251,29 @@ export default function LoginPage() {
                 <span className="h-2 w-2 bg-emerald-400" />
                 De La Salle Araneta University
               </div>
-              <h1 className="text-4xl xl:text-5xl font-bold tracking-tight text-white">
-                PATHWAYS
-              </h1>
+              <h1 className="text-4xl xl:text-5xl font-bold tracking-tight text-white">PATHWAYS</h1>
               <p className="mt-4 max-w-md text-base text-emerald-50/90 leading-relaxed">
                 Enrollment, schedule building, clearance, and academic records in one place.
               </p>
             </div>
           </div>
 
-          {/* Academic / Enrollment Advisory Strip */}
           <div className="space-y-6">
             <div className="border border-emerald-700/60 border-l-4 border-l-emerald-400 bg-emerald-950/65 p-5 backdrop-blur-xs">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-xs font-bold uppercase tracking-wider text-emerald-300">
-                  Academic Advisory
-                </span>
-                <span className="bg-emerald-800/80 px-2 py-0.5 font-mono text-[11px] font-semibold text-emerald-100">
-                  AY 2026–2027
-                </span>
-              </div>
+              <span className="text-xs font-bold uppercase tracking-wider text-emerald-300">
+                Student &amp; Staff Portal
+              </span>
               <p className="mt-2 text-sm font-semibold text-white">
-                Online Enlistment &amp; Automated Add/Drop Portal
+                Sign in to manage your enrollment, view your schedule, and track your clearances.
               </p>
               <p className="mt-1 text-xs text-emerald-100/85 leading-relaxed">
-                Ensure all institutional clearances and prerequisite grades are verified before finalizing your trimester schedule.
+                Enrollment dates and official announcements are sent to your school email by the
+                Registrar&apos;s Office.
               </p>
             </div>
 
             <div className="flex items-center justify-between text-xs text-emerald-100/90 font-medium">
-              <span>© 2026 De La Salle Araneta University</span>
+              <span>© {new Date().getFullYear()} De La Salle Araneta University</span>
               <span>Salvador Araneta Campus, Malabon</span>
             </div>
           </div>
@@ -328,23 +296,11 @@ export default function LoginPage() {
               />
             </div>
             <div>
-              <h1 className="text-2xl font-bold tracking-tight text-emerald-950 leading-none">
-                PATHWAYS
-              </h1>
+              <h1 className="text-2xl font-bold tracking-tight text-emerald-950 leading-none">PATHWAYS</h1>
               <p className="mt-1.5 text-xs font-bold uppercase tracking-wider text-emerald-800">
                 De La Salle Araneta University
               </p>
             </div>
-          </div>
-
-          {/* Mobile enrollment notice */}
-          <div className="mb-6 border border-emerald-900/15 border-l-4 border-l-emerald-700 bg-emerald-950/[0.03] px-4 py-3 lg:hidden">
-            <p className="text-xs font-bold uppercase tracking-wider text-emerald-900">
-              AY 2026–2027 Enlistment Active
-            </p>
-            <p className="mt-0.5 text-xs text-zinc-600">
-              Sign in with your DLSAU student number or staff email to manage your schedule.
-            </p>
           </div>
 
           {/* Form card */}
@@ -359,17 +315,12 @@ export default function LoginPage() {
                 <div className="h-8 w-2 bg-emerald-800" />
                 <div>
                   <h2 className="text-xl font-bold text-zinc-900">Sign In</h2>
-                  <p className="text-xs text-zinc-600">
-                    Use your student number or university email.
-                  </p>
+                  <p className="text-xs text-zinc-600">Use your student number or university email.</p>
                 </div>
               </div>
 
               {submitError && (
-                <div
-                  role="alert"
-                  className="mb-5 flex items-stretch border border-red-300 bg-red-50/50 text-red-900"
-                >
+                <div role="alert" className="mb-5 flex items-stretch border border-red-300 bg-red-50/50 text-red-900">
                   <div className="w-2 shrink-0 bg-red-600" />
                   <div className="px-4 py-3 text-sm font-semibold">{submitError}</div>
                 </div>
@@ -378,16 +329,17 @@ export default function LoginPage() {
               <form onSubmit={handleLogin} noValidate className="flex flex-col gap-5">
                 {/* Identifier */}
                 <div className="flex flex-col gap-1.5">
-                  <label
-                    htmlFor="identifier"
-                    className="text-xs font-bold uppercase tracking-wider text-zinc-700"
-                  >
+                  <label htmlFor="identifier" className="text-xs font-bold uppercase tracking-wider text-zinc-700">
                     Student No. / Email
                   </label>
                   <input
                     id="identifier"
                     name="identifier"
                     type="text"
+                    inputMode="email"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
                     value={identifier}
                     onChange={handleIdentifierChange}
                     onBlur={handleIdentifierBlur}
@@ -407,16 +359,14 @@ export default function LoginPage() {
                 {/* Password */}
                 <div className="flex flex-col gap-1.5">
                   <div className="flex items-center justify-between">
-                    <label
-                      htmlFor="password"
-                      className="text-xs font-bold uppercase tracking-wider text-zinc-700"
-                    >
+                    <label htmlFor="password" className="text-xs font-bold uppercase tracking-wider text-zinc-700">
                       Password
                     </label>
                     <button
                       type="button"
                       onClick={() => setShowResetHelp((prev) => !prev)}
-                      className="text-xs font-semibold text-emerald-800 hover:text-emerald-950 hover:underline focus:outline-none"
+                      aria-expanded={showResetHelp}
+                      className="text-xs font-semibold text-emerald-800 hover:text-emerald-950 hover:underline focus:outline-none focus-visible:underline"
                     >
                       Forgot password?
                     </button>
@@ -441,7 +391,7 @@ export default function LoginPage() {
                       onClick={() => setShowPassword((prev) => !prev)}
                       aria-label={showPassword ? "Hide password" : "Show password"}
                       aria-pressed={showPassword}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 px-2.5 py-1 text-xs font-bold uppercase tracking-wider text-zinc-600 hover:text-emerald-900 focus:outline-none"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 px-2.5 py-1 text-xs font-bold uppercase tracking-wider text-zinc-600 hover:text-emerald-900 focus:outline-none focus-visible:text-emerald-900"
                     >
                       {showPassword ? "Hide" : "Show"}
                     </button>
@@ -455,22 +405,18 @@ export default function LoginPage() {
 
                   {showResetHelp && (
                     <div className="mt-2 border border-emerald-900/15 border-l-4 border-l-emerald-700 bg-emerald-50/50 p-3 text-xs text-zinc-700 leading-relaxed">
-                      <p className="font-bold text-emerald-950">Password Reset Assistance</p>
+                      <p className="font-bold text-emerald-950">Password reset assistance</p>
                       <p className="mt-1">
-                        For security, student and staff credentials are managed through DLSAU ITSD. Email{" "}
-                        <a
-                          href="mailto:itsd@dlsau.edu.ph"
-                          className="font-semibold text-emerald-900 underline"
-                        >
+                        For security, student and staff credentials are managed by DLSAU ITSD. Email{" "}
+                        <a href="mailto:itsd@dlsau.edu.ph" className="font-semibold text-emerald-900 underline">
                           itsd@dlsau.edu.ph
                         </a>{" "}
-                        using your institutional account or visit the Registrar&apos;s Office with your university ID.
+                        from your institutional account, or visit the Registrar&apos;s Office with your university ID.
                       </p>
                     </div>
                   )}
                 </div>
 
-                {/* Submit button: always looks active when not loading so clicking surfaces validation errors */}
                 <button
                   type="submit"
                   disabled={loading}
@@ -487,20 +433,10 @@ export default function LoginPage() {
                         xmlns="http://www.w3.org/2000/svg"
                         fill="none"
                         viewBox="0 0 24 24"
+                        aria-hidden="true"
                       >
-                        <circle
-                          className="opacity-25"
-                          cx="12"
-                          cy="12"
-                          r="10"
-                          stroke="currentColor"
-                          strokeWidth="4"
-                        />
-                        <path
-                          className="opacity-75"
-                          fill="currentColor"
-                          d="M4 12a8 8 0 018-8v8z"
-                        />
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
                       </svg>
                       Signing in...
                     </>
@@ -510,14 +446,16 @@ export default function LoginPage() {
                 </button>
               </form>
 
-              {/* Need Help / Support Footer */}
+              {/* Support footer */}
               <div className="mt-6 border-t border-zinc-200 pt-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 text-xs text-zinc-600">
                 <span className="font-medium">Having trouble signing in?</span>
                 <div className="flex items-center gap-3 font-semibold text-emerald-900">
                   <a href="mailto:registrar@dlsau.edu.ph" className="hover:underline">
                     Registrar Support
                   </a>
-                  <span className="text-zinc-300">•</span>
+                  <span className="text-zinc-300" aria-hidden="true">
+                    •
+                  </span>
                   <a href="mailto:itsd@dlsau.edu.ph" className="hover:underline">
                     IT Helpdesk
                   </a>
@@ -525,39 +463,6 @@ export default function LoginPage() {
               </div>
             </div>
           </div>
-
-          {/* Test accounts (development only, now clickable to auto-fill) */}
-          {IS_DEV && (
-            <div className="mt-6 border border-emerald-900/15 bg-white">
-              <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-2.5">
-                <div className="flex items-center gap-2">
-                  <span className="h-3 w-1 bg-emerald-700" />
-                  <p className="text-xs font-bold uppercase tracking-wider text-emerald-950">
-                    Dev Quick-Fill Accounts
-                  </p>
-                </div>
-                <span className="font-mono text-[11px] text-zinc-500">pw: password123</span>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 p-3 text-xs font-mono">
-                <button
-                  type="button"
-                  onClick={() => fillTestAccount("2024-00-000890")}
-                  className="flex items-center justify-between border border-zinc-200 px-3 py-2 text-left hover:border-emerald-700 hover:bg-emerald-50/50 transition-colors"
-                >
-                  <span className="text-zinc-600">Student</span>
-                  <span className="font-bold text-emerald-950">2024-00-000890</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => fillTestAccount("admin@dlsau.edu.ph")}
-                  className="flex items-center justify-between border border-zinc-200 px-3 py-2 text-left hover:border-emerald-700 hover:bg-emerald-50/50 transition-colors"
-                >
-                  <span className="text-zinc-600">Admin</span>
-                  <span className="font-bold text-emerald-950">admin@dlsau.edu.ph</span>
-                </button>
-              </div>
-            </div>
-          )}
         </div>
       </div>
     </div>

@@ -8,7 +8,7 @@
 //   - 30-minute break between classes, nothing before 7:30 AM or after 7:30 PM
 //   - Nothing straddles 12:00 to 12:30 (afternoon classes start at 12:30 or later)
 //   - Lecture + lab pairs (XXX101A + XXX101B) go back-to-back in one block
-//   - Subjects over 3 units (6-unit ones) meet twice a week, same time, e.g. days "Mon/Thu"
+//   - Subjects over 3 units (6-unit ones) meet twice a week, same time, e.g. days "Mon, Thu"
 //   - NSTP goes on Saturday; internships are left unscheduled
 
 export type Day = "Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat";
@@ -268,10 +268,57 @@ export function assignSchedules<T extends CatalogSubject>(
     if (!ms || (s.days && s.time)) return s;
     return {
       ...s,
-      days: DAYS.filter((d) => ms.some((m) => m.day === d)).join("/"),
+      days: DAYS.filter((d) => ms.some((m) => m.day === d)).join(", "),
       time: `${fmtSlot(ms[0].start)} - ${fmtSlot(ms[0].end)}`,
     };
   });
 
   return { subjects: out, warnings };
+}
+
+/**
+ * For the admin "Auto-Resolve" button. Looks at ONE term's subjects, and:
+ *   - for every overlapping pair, moves the later one (plus its lecture/lab partner) to a free slot
+ *   - gives a time to any subject that has none
+ *   - leaves everything else exactly where it is (hand-entered times, rooms, capacity)
+ * Returns the new subjects and the codes whose days/time actually changed.
+ */
+export function rescheduleTerm<T extends CatalogSubject>(
+  subjects: T[],
+  term: TermEntry
+): { subjects: T[]; changed: string[]; warnings: string[] } {
+  const byCode = new Map(subjects.map((s) => [s.code, s]));
+  const order = term.codes.filter((c) => byCode.has(c));
+  const meet = new Map(
+    order.map((c) => {
+      const s = byCode.get(c)!;
+      return [c, parseMeetings(s.days, s.time, c, s.title)] as const;
+    })
+  );
+
+  const toMove = new Set<string>();
+  for (let i = 0; i < order.length; i++)
+    for (let j = i + 1; j < order.length; j++) {
+      const a = order[i];
+      const b = order[j];
+      if (toMove.has(a) || toMove.has(b)) continue;
+      if (hasConflict(meet.get(a)!, meet.get(b)!)) toMove.add(b);
+    }
+
+  // a lecture and its lab always move together
+  for (const c of [...toMove]) {
+    const partner = c.endsWith("A") ? `${c.slice(0, -1)}B` : c.endsWith("B") ? `${c.slice(0, -1)}A` : null;
+    if (partner && order.includes(partner)) toMove.add(partner);
+  }
+
+  const blanked = subjects.map((s) => (toMove.has(s.code) ? ({ ...s, days: "", time: "" } as T) : s));
+  const { subjects: next, warnings } = assignSchedules(blanked, [term]);
+  const changed = next
+    .filter((s) => {
+      const o = byCode.get(s.code)!;
+      return (s.days ?? "") !== (o.days ?? "") || (s.time ?? "") !== (o.time ?? "");
+    })
+    .map((s) => s.code);
+
+  return { subjects: next, changed, warnings };
 }

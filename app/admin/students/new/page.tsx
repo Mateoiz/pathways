@@ -11,22 +11,19 @@ import { getAcademicConfig } from "@/lib/academicConfig";
 /* ---------- Option lists & Auto-Generators ---------- */
 const PROGRAMS = [
   "BS Computer Science",
-  "BS Information Technology",
-  "BS Information Systems",
+  "BS Accountancy",
   "BSBA Marketing Management",
 ];
-const YEAR_LEVELS = ["1st Year", "2nd Year", "3rd Year", "4th Year", "5th Year"];
+const YEAR_LEVELS = ["1st Year", "2nd Year", "3rd Year", "4th Year"];
 const ENROLLMENT_STATUSES = ["Regular", "Irregular", "Returnee", "Transferee"];
 const ADMISSION_TYPES = ["Freshman", "Transferee", "Returnee", "Cross-Enrollee", "Foreign Student"];
 const SEMESTERS = ["1st Trimester", "2nd Trimester", "3rd Trimester"];
 
 const PROGRAM_PREFIXES: Record<string, string> = {
   "BS Computer Science": "BSCS",
-  "BS Information Technology": "BSIT",
-  "BS Information Systems": "BSIS",
+  "BS Accountancy": "BACC",
   "BSBA Marketing Management": "MKTG",
 };
-
 function generateUniversityEmail(firstName: string, lastName: string): string {
   const sanitize = (str: string) =>
     str

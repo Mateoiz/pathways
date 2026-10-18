@@ -6,6 +6,7 @@ import Link from "next/link";
 import { collection, getDocs, query, where, writeBatch, doc, increment } from "firebase/firestore";
 import { onAuthStateChanged } from "firebase/auth";
 import { auth, db } from "@/lib/firebase";
+import { getAcademicConfig } from "@/lib/academicConfig";
 import Navbar from "@/components/Navbar";
 import { DAY_FULL, Item, toItem } from "@/components/schedule/types";
 import WeeklyTimetable from "@/components/schedule/WeeklyTimetable";
@@ -22,6 +23,7 @@ export default function SchedulePage() {
   const [role, setRole] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const [enlistments, setEnlistments] = useState<any[]>([]);
+  const [catalogMap, setCatalogMap] = useState<Record<string, any>>({});
   const [isLoading, setIsLoading] = useState(true);
   const [view, setView] = useState<"week" | "day">("week");
   const [toast, setToast] = useState<Toast | null>(null);
@@ -41,38 +43,63 @@ export default function SchedulePage() {
     setRole(storedRole);
 
     const unsubscribe = onAuthStateChanged(auth, (user) => {
-      setUserId(user ? user.uid : localStorage.getItem("mock_user_id") || "mock-student-id-123");
+      const storedId = localStorage.getItem("mock_user_id");
+      setUserId(storedId || (user ? user.uid : "mock-student-id-123"));
     });
     return () => unsubscribe();
   }, [router]);
 
-  // 2. Load the student's enlistments directly from Firestore
-  useEffect(() => {
-    async function fetchEnlistments() {
+  // 2. Load the student's enlistments AND live subject catalog (so updated days/times always show)
+useEffect(() => {
+    async function fetchScheduleData() {
       if (!userId) return;
       try {
-        const q = query(collection(db, "enlistments"), where("userId", "==", userId));
-        const snapshot = await getDocs(q);
-        const byCode = new Map<string, any>();
-        snapshot.docs.forEach((d) => {
+        const [config, enlistSnap, subjectsSnap] = await Promise.all([
+          getAcademicConfig(),
+          getDocs(query(collection(db, "enlistments"), where("userId", "==", userId))),
+          getDocs(collection(db, "subjects")),
+        ]);
+
+        const subMap: Record<string, any> = {};
+        subjectsSnap.docs.forEach((d) => {
           const data = d.data();
-          byCode.set(data.code, data);
+          const code = data.code || d.id;
+          subMap[code] = { id: d.id, ...data };
         });
+        setCatalogMap(subMap);
+
+        const byCode = new Map<string, any>();
+        enlistSnap.docs.forEach((d) => {
+          const data = d.data();
+          const docTerm = data.enrolledTerm || data.term || "1st Trimester";
+          // Only show subjects enlisted for the currently active trimester
+          if (docTerm !== config.currentTerm) return;
+
+          const liveSub = subMap[data.code] || {};
+          byCode.set(data.code, {
+            ...liveSub,
+            ...data,
+            days: data.days || liveSub.days || "",
+            time: data.time || liveSub.time || "",
+            room: (data.room && data.room !== "TBA" ? data.room : liveSub.room) || "TBA",
+          });
+        });
+
         setEnlistments(Array.from(byCode.values()));
       } catch (error) {
-        console.error("Error loading enlistments:", error);
+        console.error("Error loading schedule data:", error);
       } finally {
         setIsLoading(false);
       }
     }
-    fetchEnlistments();
+    fetchScheduleData();
   }, [userId]);
 
   // 3. Drop an unconfirmed subject and restore +1 slot to subjects/{code}
   async function handleDrop(code: string) {
     if (!userId) return;
     const target = enlistments.find((s) => s.code === code);
-    if (!target || isEnrolledDoc(target)) return; // enrolled / block subjects can't be dropped here
+    if (!target || isEnrolledDoc(target)) return;
 
     const previous = enlistments;
     setEnlistments(enlistments.filter((s) => s.code !== code));
@@ -85,7 +112,9 @@ export default function SchedulePage() {
       const snapshot = await getDocs(q);
       const batch = writeBatch(db);
       snapshot.forEach((d) => batch.delete(d.ref));
-      batch.update(doc(db, "subjects", code), {
+
+      const subjectDocId = catalogMap[code]?.id || code;
+      batch.update(doc(db, "subjects", subjectDocId), {
         slots: increment(1),
       });
       await batch.commit();

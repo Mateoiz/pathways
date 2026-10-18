@@ -24,15 +24,10 @@ import { getAcademicConfig } from "@/lib/academicConfig";
 const ITEMS_PER_PAGE = 10;
 
 const SELECTED_TAB = "My Subjects";
-const CATEGORIES = [
-  "All Subjects",
-  "1st Year",
-  "2nd Year",
-  "3rd Year",
-  "4th Year",
-  "General Education",
-  SELECTED_TAB,
-];
+const FLOWCHART_TAB = "This Term's Prescribed Courses";
+const GENED_TAB = "Gen Ed Electives";
+const ALL_PROGRAM_TAB = "Full Program Flowchart";
+
 const TERMS = ["1st Trimester", "2nd Trimester", "3rd Trimester"];
 const YEAR_OPTIONS = ["1st Year", "2nd Year", "3rd Year", "4th Year"];
 
@@ -53,14 +48,13 @@ export default function SubjectCatalogPage() {
   const [currentTerm, setCurrentTerm] = useState("1st Trimester");
   const [schoolYear, setSchoolYear] = useState("2026-2027");
   const [enrollmentOpen, setEnrollmentOpen] = useState(true);
-  const [maxUnitsPerTerm, setMaxUnitsPerTerm] = useState(21);
+  const [maxUnitsPerTerm, setMaxUnitsPerTerm] = useState(23);
   const [isBlockEnrolledFlag, setIsBlockEnrolledFlag] = useState<boolean | null>(null);
   const [hasPendingClearance, setHasPendingClearance] = useState(false);
 
   // UI state
   const [searchQuery, setSearchQuery] = useState("");
-  const [activeCategory, setActiveCategory] = useState("All Subjects");
-  const [filterTerm, setFilterTerm] = useState("All");
+  const [activeCategory, setActiveCategory] = useState(FLOWCHART_TAB);
   const [currentPage, setCurrentPage] = useState(1);
   const [trayOpen, setTrayOpen] = useState(false);
 
@@ -86,7 +80,7 @@ export default function SubjectCatalogPage() {
     setTimeout(() => setToast(null), 3000);
   }
 
-  // Dynamically compute live slots for every subject based on real enlistments in Firestore
+  // Live slots calculation
   const subjects = useMemo(() => {
     return rawSubjects.map((sub) => {
       const maxSlots = sub.max ?? 40;
@@ -100,21 +94,43 @@ export default function SubjectCatalogPage() {
     });
   }, [rawSubjects, enlistmentCounts]);
 
-  // Sync the live enlistment counts back into the `subjects` collection in Firestore (dev tool)
-  async function syncSubjectSlotsWithEnlistments() {
-    try {
-      const batch = writeBatch(db);
-      subjects.forEach((sub) => {
-        const docId = sub.id || sub.code;
-        batch.update(doc(db, "subjects", docId), { slots: sub.slots });
-      });
-      await batch.commit();
-      showToast("success", "Synced all subject slots with live enlistments.");
-    } catch (error) {
-      console.error(error);
-      showToast("error", "Failed to sync slots. Check console.");
-    }
-  }
+  // ───────────── Curriculum Flowchart Resolution ─────────────
+  const termEntry = (year: string, term: string) =>
+    curriculum?.terms?.find((t: any) => t.year === year && t.term === term);
+
+  const resolveCodes = (codes: string[] = []) =>
+    codes.map((c) => subjects.find((s) => s.code === c)).filter(Boolean) as any[];
+
+  const hasCurriculum = !!curriculum;
+
+  // All subject codes that belong to this student's degree program flowchart
+  const allProgramCodes = useMemo(() => {
+    const codes = new Set<string>();
+    curriculum?.terms?.forEach((t: any) => {
+      (t.codes || []).forEach((c: string) => codes.add(c));
+    });
+    return codes;
+  }, [curriculum]);
+
+  // Codes prescribed for the student's current Year + current active Trimester
+  const activeTermFlowchartCodes = useMemo(() => {
+    if (!studentYear) return new Set<string>();
+    const entry = termEntry(studentYear, currentTerm);
+    return new Set<string>(entry?.codes || []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [curriculum, studentYear, currentTerm]);
+
+  // Strict 1st Year, 1st Trimester block lock check
+  const blockEntry = studentYear ? termEntry(studentYear, currentTerm) : undefined;
+  const locked =
+    studentYear === "1st Year" &&
+    currentTerm === "1st Trimester" &&
+    isBlockEnrolledFlag !== false &&
+    !!blockEntry?.block;
+  const blockSubjects = locked ? resolveCodes(blockEntry.codes) : [];
+
+  // Recommended subjects for flexible terms (2nd Trimester+)
+  const recommended = resolveCodes(termEntry(recYear, recTerm)?.codes);
 
   // ───────────── Derived tracking data ─────────────
   const enlistedCodes = useMemo(
@@ -128,32 +144,18 @@ export default function SubjectCatalogPage() {
   const enlistedByTerm = useMemo(() => {
     const groups: Record<string, any[]> = {};
     enlistedSubjects.forEach((s) => {
-      const key = s.term || "Other";
+      const key = s.enrolledTerm || s.term || currentTerm;
       (groups[key] ||= []).push(s);
     });
     return groups;
-  }, [enlistedSubjects]);
-
-  // ───────────── Curriculum resolution ─────────────
-  const termEntry = (year: string, term: string) =>
-    curriculum?.terms?.find((t: any) => t.year === year && t.term === term);
-
-  const resolveCodes = (codes: string[] = []) =>
-    codes.map((c) => subjects.find((s) => s.code === c)).filter(Boolean) as any[];
-
-  const hasCurriculum = !!curriculum;
-  const recommended = resolveCodes(termEntry(recYear, recTerm)?.codes);
-
-  const blockEntry = studentYear ? termEntry(studentYear, currentTerm) : undefined;
-  const locked = isBlockEnrolledFlag !== false && !!blockEntry?.block;
-  const blockSubjects = locked ? resolveCodes(blockEntry.codes) : [];
+  }, [enlistedSubjects, currentTerm]);
 
   const recToAdd = recommended.filter((s) => !enlistedCodes.has(s.code) && s.slots > 0);
   const recUnitsToAdd = recToAdd.reduce((t, s) => t + s.units, 0);
   const recTotalUnits = recommended.reduce((t, s) => t + s.units, 0);
   const recOverBy = Math.max(currentUnits + recUnitsToAdd - maxUnitsPerTerm, 0);
 
-  // 1. Verify role & get consistent student identifier
+  // 1. Verify role & student ID
   useEffect(() => {
     const storedRole = localStorage.getItem("mock_user_role");
     if (!storedRole || storedRole !== "student") {
@@ -186,51 +188,7 @@ export default function SubjectCatalogPage() {
     fetchCatalog();
   }, []);
 
-  // 3. Real-time listener on `enlistments`: calculates live slot counts AND this student's subjects
-  useEffect(() => {
-    if (!userId) return;
-
-    const unsubscribe = onSnapshot(
-      collection(db, "enlistments"),
-      (snapshot) => {
-        const countsBySubjectUser = new Map<string, Set<string>>();
-        const mySubjectsByCode = new Map<string, any>();
-
-        snapshot.docs.forEach((d) => {
-          const data = d.data();
-          const code = data.code;
-          const uid = data.userId;
-          if (!code) return;
-
-          if (!countsBySubjectUser.has(code)) {
-            countsBySubjectUser.set(code, new Set());
-          }
-          countsBySubjectUser.get(code)!.add(uid || d.id);
-
-          if (uid === userId) {
-            mySubjectsByCode.set(code, data);
-          }
-        });
-
-        const liveCounts: Record<string, number> = {};
-        countsBySubjectUser.forEach((studentSet, code) => {
-          liveCounts[code] = studentSet.size;
-        });
-
-        setEnlistmentCounts(liveCounts);
-        setEnlistedSubjects(Array.from(mySubjectsByCode.values()));
-        setEnlistmentsLoaded(true);
-      },
-      (error) => {
-        console.error("Error listening to enlistments:", error);
-        setEnlistmentsLoaded(true);
-      }
-    );
-
-    return () => unsubscribe();
-  }, [userId]);
-
-  // 4. Load student's program, year level, clearances, and global academic config
+  // 3. Load student's program, year level, clearances, and global academic config
   useEffect(() => {
     async function fetchStudent() {
       const studentNo = localStorage.getItem("mock_user_id");
@@ -253,7 +211,7 @@ export default function SubjectCatalogPage() {
           setStudentProgram(d.program || d.academic?.program || null);
           setStudentYear(year);
           setRecYear(year);
-          setMaxUnitsPerTerm(d.maxUnits ?? d.academic?.maxUnits ?? config.maxUnitsDefault);
+          setMaxUnitsPerTerm(d.maxUnits ?? d.academic?.maxUnits ?? config.maxUnitsDefault ?? 23);
           setIsBlockEnrolledFlag(d.blockEnrolled ?? null);
 
           const clearances = d.clearances || {};
@@ -268,6 +226,53 @@ export default function SubjectCatalogPage() {
     }
     fetchStudent();
   }, []);
+
+  // 4. Real-time listener on `enlistments` (scoped to active `currentTerm`)
+  useEffect(() => {
+    if (!userId || !studentLoaded) return;
+
+    const unsubscribe = onSnapshot(
+      collection(db, "enlistments"),
+      (snapshot) => {
+        const countsBySubjectUser = new Map<string, Set<string>>();
+        const mySubjectsByCode = new Map<string, any>();
+
+        snapshot.docs.forEach((d) => {
+          const data = d.data();
+          const code = data.code;
+          const uid = data.userId;
+          const docTerm = data.enrolledTerm || data.term || "1st Trimester";
+          if (!code) return;
+
+          if (docTerm === currentTerm) {
+            if (!countsBySubjectUser.has(code)) {
+              countsBySubjectUser.set(code, new Set());
+            }
+            countsBySubjectUser.get(code)!.add(uid || d.id);
+
+            if (uid === userId) {
+              mySubjectsByCode.set(code, data);
+            }
+          }
+        });
+
+        const liveCounts: Record<string, number> = {};
+        countsBySubjectUser.forEach((studentSet, code) => {
+          liveCounts[code] = studentSet.size;
+        });
+
+        setEnlistmentCounts(liveCounts);
+        setEnlistedSubjects(Array.from(mySubjectsByCode.values()));
+        setEnlistmentsLoaded(true);
+      },
+      (error) => {
+        console.error("Error listening to enlistments:", error);
+        setEnlistmentsLoaded(true);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [userId, studentLoaded, currentTerm]);
 
   // 5. Load curriculum for the student's program
   useEffect(() => {
@@ -290,19 +295,28 @@ export default function SubjectCatalogPage() {
     })();
   }, [studentLoaded, studentProgram]);
 
-  // 6. Block term: auto-enroll student once & update Firestore slots
+  // 6. Strict 1st-Year 1st-Trimester Block Auto-Enroller
   useEffect(() => {
     if (!locked || !userId || !enlistmentsLoaded || isLoadingCatalog || autoEnrolled.current) return;
+    if (blockSubjects.length === 0) return;
+
     autoEnrolled.current = true;
     setActiveCategory(SELECTED_TAB);
 
+    const validBlockCodes = new Set(blockSubjects.map((b) => b.code));
     const missing = blockSubjects.filter((b) => !enlistedCodes.has(b.code));
-    if (missing.length === 0) return;
+    const extras = enlistedSubjects.filter((e) => !validBlockCodes.has(e.code));
+
+    if (missing.length === 0 && extras.length === 0) return;
 
     (async () => {
       try {
         const batch = writeBatch(db);
         const now = new Date().toISOString();
+
+        extras.forEach((ex) => {
+          batch.delete(doc(db, "enlistments", `${userId}_${ex.code}`));
+        });
 
         missing.forEach((m) => {
           const { id: docId, ...rest } = m;
@@ -311,7 +325,8 @@ export default function SubjectCatalogPage() {
             ...rest,
             slots: nextSlots,
             userId,
-            term: currentTerm,
+            enrolledTerm: currentTerm,
+            schoolYear,
             enlistedAt: now,
             source: "block",
             status: "Enrolled",
@@ -329,7 +344,7 @@ export default function SubjectCatalogPage() {
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [locked, userId, enlistmentsLoaded, isLoadingCatalog, currentTerm]);
+  }, [locked, userId, enlistmentsLoaded, isLoadingCatalog, currentTerm, blockSubjects.length]);
 
   // Add one subject
   async function handleEnlist(subject: any) {
@@ -364,7 +379,8 @@ export default function SubjectCatalogPage() {
         ...rest,
         slots: nextSlots,
         userId,
-        term: currentTerm,
+        enrolledTerm: currentTerm,
+        schoolYear,
         enlistedAt: new Date().toISOString(),
       });
       batch.update(doc(db, "subjects", subjectDocId || subject.code), {
@@ -443,7 +459,8 @@ export default function SubjectCatalogPage() {
           ...rest,
           slots: nextSlots,
           userId,
-          term: currentTerm,
+          enrolledTerm: currentTerm,
+          schoolYear,
           enlistedAt: now,
         });
         batch.update(doc(db, "subjects", subjectDocId || s.code), {
@@ -469,7 +486,7 @@ export default function SubjectCatalogPage() {
   // Drop everything
   async function handleClearEnlistments() {
     if (locked || !userId || enlistedSubjects.length === 0) return;
-    if (!confirm("Drop all your subjects? This clears your current list.")) return;
+    if (!confirm("Drop all your subjects for this term?")) return;
 
     const droppedCodes = enlistedSubjects.map((s) => s.code);
     setTrayOpen(false);
@@ -479,7 +496,10 @@ export default function SubjectCatalogPage() {
       const snapshot = await getDocs(q);
       const batch = writeBatch(db);
 
-      snapshot.forEach((d) => batch.delete(d.ref));
+      snapshot.forEach((d) => {
+        const dTerm = d.data().enrolledTerm || d.data().term || "1st Trimester";
+        if (dTerm === currentTerm) batch.delete(d.ref);
+      });
       droppedCodes.forEach((code) => {
         const catalogMatch = subjects.find((s) => s.code === code);
         const subjectDocId = catalogMatch?.id || code;
@@ -500,22 +520,34 @@ export default function SubjectCatalogPage() {
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [activeCategory, searchQuery, filterTerm]);
+  }, [activeCategory, searchQuery]);
+
+  const categories = locked
+    ? [SELECTED_TAB]
+    : [FLOWCHART_TAB, GENED_TAB, ALL_PROGRAM_TAB, SELECTED_TAB];
 
   const filteredSubjects = subjects.filter((sub) => {
     const q = searchQuery.toLowerCase();
-    const matchesSearch = sub.code.toLowerCase().includes(q) || sub.title.toLowerCase().includes(q);
-    const matchesTerm = filterTerm === "All" || sub.term === filterTerm;
+    const matchesSearch =
+      sub.code.toLowerCase().includes(q) || sub.title.toLowerCase().includes(q);
 
-    let matchesCategory = true;
-    if (activeCategory === SELECTED_TAB) {
-      matchesCategory = enlistedCodes.has(sub.code);
-    } else if (activeCategory === "General Education") {
-      matchesCategory = sub.isGenEd === true;
-    } else if (activeCategory !== "All Subjects") {
-      matchesCategory = sub.year === activeCategory && !sub.isGenEd;
+    if (locked) {
+      return matchesSearch && enlistedCodes.has(sub.code);
     }
-    return matchesSearch && matchesTerm && matchesCategory;
+
+    if (activeCategory === SELECTED_TAB) {
+      return matchesSearch && enlistedCodes.has(sub.code);
+    }
+    if (activeCategory === FLOWCHART_TAB) {
+      return matchesSearch && activeTermFlowchartCodes.has(sub.code);
+    }
+    if (activeCategory === GENED_TAB) {
+      return matchesSearch && sub.isGenEd === true;
+    }
+    if (activeCategory === ALL_PROGRAM_TAB) {
+      return matchesSearch && (allProgramCodes.has(sub.code) || sub.isGenEd === true);
+    }
+    return matchesSearch;
   });
 
   const totalPages = Math.ceil(filteredSubjects.length / ITEMS_PER_PAGE);
@@ -587,28 +619,15 @@ export default function SubjectCatalogPage() {
                   <span>•</span>
                   <span>{currentTerm}</span>
                   <span>•</span>
-                  <span className={enrollmentOpen ? "text-emerald-700" : "text-red-700"}>
-                    {enrollmentOpen ? "Enrollment Open" : "Enrollment Closed"}
-                  </span>
+                  <span>{studentProgram} ({studentYear})</span>
                 </div>
                 <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-emerald-950">Subjects</h1>
                 <p className="mt-1 text-sm text-zinc-500">
                   {locked
-                    ? "These are your subjects for this term."
-                    : "Browse subjects and add them to your list for this term."}
+                    ? "Your 1st-Year, 1st-Trimester block courses are automatically set according to your program flowchart."
+                    : "Select your prescribed flowchart courses for this term, or add/swap General Education electives."}
                 </p>
               </div>
-
-              {process.env.NODE_ENV === "development" && (
-                <div className="flex items-center gap-2 pt-2 sm:pt-0">
-                  <button
-                    onClick={syncSubjectSlotsWithEnlistments}
-                    className="border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-800 hover:bg-emerald-100"
-                  >
-                    Sync slots with live enlistments
-                  </button>
-                </div>
-              )}
             </div>
           </header>
 
@@ -617,7 +636,7 @@ export default function SubjectCatalogPage() {
             <div className="mb-6 border border-amber-300 border-l-4 border-l-amber-500 bg-amber-50/60 px-5 py-4 shadow-xs">
               <p className="text-sm font-bold text-amber-950">Clearance Pending</p>
               <p className="mt-1 text-sm text-amber-900">
-                You currently have one or more uncleared department clearances. Subject selection will be unlocked once all clearance gates are cleared.
+                You have uncleared department clearances. Subject selection unlocks once all offices mark you Cleared.
               </p>
             </div>
           )}
@@ -625,14 +644,16 @@ export default function SubjectCatalogPage() {
           {/* Block-term banner */}
           {locked && (
             <div className="mb-6 border border-emerald-200 border-l-4 border-l-emerald-700 bg-white px-5 py-4 shadow-xs">
-              <p className="text-sm font-bold text-emerald-950">Your first-term subjects are set for you</p>
+              <p className="text-sm font-bold text-emerald-950">
+                1st Year • 1st Trimester Fixed Block ({enlistedSubjects.length} Subjects, {currentUnits} Units)
+              </p>
               <p className="mt-1 text-sm text-zinc-600">
-                You&apos;re enrolled in a fixed set of subjects this term. Subject selection opens next term.
+                As a 1st-Year, 1st-Trimester student, you are automatically enrolled in your flowchart block. Starting 2nd Trimester, you can freely select your subjects and Gen Ed electives.
               </p>
             </div>
           )}
 
-          {/* Recommended subjects (flexible terms only) */}
+          {/* Recommended subjects (2nd Trimester+ flexible terms only) */}
           {hasCurriculum && !locked && (
             <RecommendedPanel
               studentProgram={studentProgram}
@@ -658,7 +679,7 @@ export default function SubjectCatalogPage() {
           {/* Category Tabs */}
           <div className="mb-5 flex overflow-x-auto no-scrollbar border-b border-zinc-300">
             <div className="flex gap-6 min-w-max">
-              {CATEGORIES.map((category) => {
+              {categories.map((category) => {
                 const isActive = activeCategory === category;
                 return (
                   <button
@@ -682,31 +703,23 @@ export default function SubjectCatalogPage() {
             </div>
           </div>
 
-          {/* Search & Term Filter */}
-          <div className="mb-5 flex flex-col sm:flex-row gap-3">
-            <div className="relative flex-1">
-              <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
-                <span className="h-3 w-1 bg-emerald-700" />
+          {/* Search Bar */}
+          {!locked && (
+            <div className="mb-5 flex flex-col sm:flex-row gap-3">
+              <div className="relative flex-1">
+                <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+                  <span className="h-3 w-1 bg-emerald-700" />
+                </div>
+                <input
+                  type="text"
+                  placeholder="Search by subject code or title..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full border border-zinc-300 bg-white pl-6 pr-3 py-2.5 text-sm font-medium placeholder:text-zinc-400 focus:border-emerald-800 focus:outline-none focus:ring-1 focus:ring-emerald-800"
+                />
               </div>
-              <input
-                type="text"
-                placeholder="Search by code or title..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full border border-zinc-300 bg-white pl-6 pr-3 py-2.5 text-sm font-medium placeholder:text-zinc-400 focus:border-emerald-800 focus:outline-none focus:ring-1 focus:ring-emerald-800"
-              />
             </div>
-            <select
-              value={filterTerm}
-              onChange={(e) => setFilterTerm(e.target.value)}
-              className="border border-zinc-300 bg-white px-3 py-2.5 text-sm font-medium focus:border-emerald-800 focus:outline-none focus:ring-1 focus:ring-emerald-800"
-            >
-              <option value="All">All Terms</option>
-              {TERMS.map((t) => (
-                <option key={t} value={t}>{t}</option>
-              ))}
-            </select>
-          </div>
+          )}
 
           {/* Subject List */}
           {filteredSubjects.length === 0 ? (
@@ -715,16 +728,17 @@ export default function SubjectCatalogPage() {
               <p className="text-sm font-semibold text-zinc-700">
                 {activeCategory === SELECTED_TAB ? "You haven't added any subjects yet." : "No subjects found."}
               </p>
-              <button
-                onClick={() => {
-                  setSearchQuery("");
-                  setActiveCategory("All Subjects");
-                  setFilterTerm("All");
-                }}
-                className="mt-3 text-xs font-bold text-emerald-800 underline hover:text-emerald-950"
-              >
-                {activeCategory === SELECTED_TAB ? "Browse all subjects" : "Clear filters"}
-              </button>
+              {!locked && (
+                <button
+                  onClick={() => {
+                    setSearchQuery("");
+                    setActiveCategory(FLOWCHART_TAB);
+                  }}
+                  className="mt-3 text-xs font-bold text-emerald-800 underline hover:text-emerald-950"
+                >
+                  View this term&apos;s flowchart subjects
+                </button>
+              )}
             </div>
           ) : (
             <div className="flex flex-col gap-3">

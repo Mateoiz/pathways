@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -22,13 +22,13 @@ import {
   getAcademicConfig,
 } from "@/lib/academicConfig";
 
+// Only offer programs with active, conflict-free seeded schedules
 const PROGRAMS = [
   "BS Computer Science",
-  "BS Information Technology",
-  "BS Information Systems",
+  "BS Accountancy",
   "BSBA Marketing Management",
 ];
-const YEAR_LEVELS = ["1st Year", "2nd Year", "3rd Year", "4th Year", "5th Year"];
+const YEAR_LEVELS = ["1st Year", "2nd Year", "3rd Year", "4th Year"];
 const ENROLLMENT_STATUSES = ["Regular", "Irregular", "Returnee", "Transferee"];
 const TERMS: AcademicConfig["currentTerm"][] = [
   "1st Trimester",
@@ -59,6 +59,163 @@ const REQUIREMENTS = [
 
 const STUDENTS_PER_PAGE = 15;
 
+/* ───────── Custom Non-Native UI Primitives ───────── */
+function CustomSelect({
+  value,
+  options,
+  onChange,
+  disabled = false,
+  className = "",
+}: {
+  value: string;
+  options: { label: string; value: string }[] | string[];
+  onChange: (val: string) => void;
+  disabled?: boolean;
+  className?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  const normalized = useMemo(
+    () =>
+      options.map((o) =>
+        typeof o === "string" ? { label: o, value: o } : o
+      ),
+    [options]
+  );
+
+  const selectedLabel =
+    normalized.find((o) => o.value === value)?.label || value;
+
+  useEffect(() => {
+    function handleOutside(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", handleOutside);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("mousedown", handleOutside);
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, []);
+
+  return (
+    <div ref={ref} className={`relative ${className}`}>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center justify-between gap-2 border border-zinc-300 bg-white px-3 py-2 text-left text-xs font-bold text-zinc-800 transition-colors hover:border-emerald-800 focus:border-emerald-800 focus:outline-none disabled:opacity-50"
+      >
+        <span className="truncate">{selectedLabel}</span>
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          viewBox="0 0 20 20"
+          fill="currentColor"
+          className={`h-4 w-4 shrink-0 text-emerald-800 transition-transform ${
+            open ? "rotate-180" : ""
+          }`}
+        >
+          <path
+            fillRule="evenodd"
+            d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z"
+            clipRule="evenodd"
+          />
+        </svg>
+      </button>
+
+      {open && (
+        <ul className="absolute right-0 left-0 z-40 mt-1 max-h-60 min-w-[160px] overflow-y-auto border border-emerald-900/20 bg-white py-1 shadow-xl">
+          {normalized.map((opt) => {
+            const active = opt.value === value;
+            return (
+              <li key={opt.value}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onChange(opt.value);
+                    setOpen(false);
+                  }}
+                  className={`flex w-full items-center justify-between px-3 py-2 text-left text-xs transition-colors hover:bg-emerald-50 ${
+                    active
+                      ? "bg-emerald-50/70 font-bold text-emerald-950"
+                      : "font-medium text-zinc-700"
+                  }`}
+                >
+                  <span className="truncate">{opt.label}</span>
+                  {active && (
+                    <span className="h-2 w-2 shrink-0 bg-emerald-700" />
+                  )}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function CustomCheck({
+  checked,
+  onChange,
+  label,
+  description,
+}: {
+  checked: boolean;
+  onChange: (next: boolean) => void;
+  label: string;
+  description?: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      className={`flex w-full items-start gap-3 border border-l-4 p-3 text-left transition-all ${
+        checked
+          ? "border-emerald-700 border-l-emerald-700 bg-emerald-50/60"
+          : "border-zinc-200 border-l-zinc-300 bg-white hover:border-emerald-400"
+      }`}
+    >
+      <span
+        className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center border ${
+          checked
+            ? "border-emerald-800 bg-emerald-800 text-white"
+            : "border-zinc-300 bg-white"
+        }`}
+      >
+        {checked && (
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 20 20"
+            fill="currentColor"
+            className="h-3 w-3"
+          >
+            <path
+              fillRule="evenodd"
+              d="M16.7 5.3a1 1 0 010 1.4l-7.5 7.5a1 1 0 01-1.4 0L3.3 9.7a1 1 0 011.4-1.4l3.8 3.8 6.8-6.8a1 1 0 011.4 0z"
+              clipRule="evenodd"
+            />
+          </svg>
+        )}
+      </span>
+      <div>
+        <span className="block text-xs font-bold text-zinc-900">{label}</span>
+        {description && (
+          <span className="mt-0.5 block text-[11px] text-zinc-600">
+            {description}
+          </span>
+        )}
+      </div>
+    </button>
+  );
+}
+
 export default function AdminDashboardPage() {
   const router = useRouter();
 
@@ -82,11 +239,13 @@ export default function AdminDashboardPage() {
   const [promoteYearsOnRollover, setPromoteYearsOnRollover] = useState(false);
   const [isRollingOver, setIsRollingOver] = useState(false);
 
-  // Directory Filters & Pagination
+  // Directory Filters, Bulk Selection & Pagination
   const [searchQuery, setSearchQuery] = useState("");
   const [filterProgram, setFilterProgram] = useState("All");
   const [filterYear, setFilterYear] = useState("All");
   const [filterClearance, setFilterClearance] = useState("All");
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [isBulkUpdating, setIsBulkUpdating] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
 
   // Edit Modal States
@@ -147,7 +306,7 @@ export default function AdminDashboardPage() {
     }
   }, [role]);
 
-  // Save changes to Global Academic Config (Term, SY, Open/Closed)
+  // Save changes to Global Academic Config
   async function handleUpdateAcademicConfig(patch: Partial<AcademicConfig>) {
     const nextConfig: AcademicConfig = {
       ...academicConfig,
@@ -172,7 +331,78 @@ export default function AdminDashboardPage() {
     }
   }
 
-  // Execute Term Rollover (Batch update students + update global term)
+  // 1-Click Quick-Clear a single student directly from the table row
+  async function handleQuickClearStudent(student: any) {
+    const docId = student.id || student.studentId;
+    const allCleared: Record<string, string> = {};
+    CLEARANCE_GATES.forEach(({ key }) => (allCleared[key] = "cleared"));
+    const now = new Date().toISOString();
+
+    setStudents((prev) =>
+      prev.map((s) =>
+        (s.id || s.studentId) === docId
+          ? { ...s, clearances: allCleared, updatedAt: now }
+          : s
+      )
+    );
+
+    try {
+      await updateDoc(doc(db, "students", docId), {
+        clearances: allCleared,
+        updatedAt: now,
+      });
+      showToast("success", `Cleared all 8 offices for ${student.studentId}.`);
+    } catch (error) {
+      console.error(error);
+      showToast("error", "Failed to quick-clear student.");
+    }
+  }
+
+  // Bulk Clear / Reset selected students
+  async function handleBulkClearance(status: "cleared" | "pending") {
+    if (selectedIds.size === 0) return;
+    setIsBulkUpdating(true);
+
+    const targetMap: Record<string, string> = {};
+    CLEARANCE_GATES.forEach(({ key }) => (targetMap[key] = status));
+    const now = new Date().toISOString();
+
+    try {
+      const ids = Array.from(selectedIds);
+      for (let i = 0; i < ids.length; i += 450) {
+        const batch = writeBatch(db);
+        ids.slice(i, i + 450).forEach((id) => {
+          batch.update(doc(db, "students", id), {
+            clearances: targetMap,
+            updatedAt: now,
+          });
+        });
+        await batch.commit();
+      }
+
+      setStudents((prev) =>
+        prev.map((s) =>
+          selectedIds.has(s.id || s.studentId)
+            ? { ...s, clearances: targetMap, updatedAt: now }
+            : s
+        )
+      );
+      showToast(
+        "success",
+        `Marked ${selectedIds.size} student(s) as ${
+          status === "cleared" ? "Fully Cleared" : "Pending"
+        }.`
+      );
+      setSelectedIds(new Set());
+    } catch (error) {
+      console.error(error);
+      showToast("error", "Bulk update failed.");
+    } finally {
+      setIsBulkUpdating(false);
+    }
+  }
+
+  // Execute Term Rollover
   async function handleTermRollover(e: React.FormEvent) {
     e.preventDefault();
     setIsRollingOver(true);
@@ -187,10 +417,8 @@ export default function AdminDashboardPage() {
         "2nd Year": "3rd Year",
         "3rd Year": "4th Year",
         "4th Year": "4th Year",
-        "5th Year": "5th Year",
       };
 
-      // Update students in chunks of 450
       const updatedLocalStudents = [...students];
       for (let i = 0; i < students.length; i += 450) {
         const batch = writeBatch(db);
@@ -245,7 +473,7 @@ export default function AdminDashboardPage() {
     }
   }
 
-  // 3. Open Edit Modal with normalized default fields
+  // 3. Open Edit Modal
   function openEditModal(student: any) {
     const defaultClearances: Record<string, string> = {};
     CLEARANCE_GATES.forEach(({ key }) => {
@@ -302,7 +530,7 @@ export default function AdminDashboardPage() {
     }));
   }
 
-  // 4. Save Edited Student Profile to Firestore
+  // 4. Save Edited Student Profile
   async function handleSaveStudent(e: React.FormEvent) {
     e.preventDefault();
     if (!editingStudent) return;
@@ -365,7 +593,6 @@ export default function AdminDashboardPage() {
     }
   }
 
-  // Reset pagination when filters change
   useEffect(() => {
     setCurrentPage(1);
   }, [searchQuery, filterProgram, filterYear, filterClearance]);
@@ -407,6 +634,27 @@ export default function AdminDashboardPage() {
       return CLEARANCE_GATES.every((g) => c[g.key] === "cleared");
     }).length;
   }, [students]);
+
+  const allOnPageSelected =
+    paginatedStudents.length > 0 &&
+    paginatedStudents.every((s) => selectedIds.has(s.id || s.studentId));
+
+  function toggleSelectAllOnPage() {
+    const next = new Set(selectedIds);
+    if (allOnPageSelected) {
+      paginatedStudents.forEach((s) => next.delete(s.id || s.studentId));
+    } else {
+      paginatedStudents.forEach((s) => next.add(s.id || s.studentId));
+    }
+    setSelectedIds(next);
+  }
+
+  function toggleSelectRow(docId: string) {
+    const next = new Set(selectedIds);
+    if (next.has(docId)) next.delete(docId);
+    else next.add(docId);
+    setSelectedIds(next);
+  }
 
   if (!role || isLoading)
     return (
@@ -491,7 +739,7 @@ export default function AdminDashboardPage() {
                     Student Records & Clearance
                   </h1>
                   <p className="mt-1 text-sm text-emerald-100/80 max-w-xl">
-                    Add student records, manage active trimester enrollment, check requirements, and update clearance status.
+                    Add student records, manage active trimester enrollment, check requirements, and batch-clear offices.
                   </p>
                 </div>
               </div>
@@ -536,51 +784,60 @@ export default function AdminDashboardPage() {
                     Active Academic Term & Enrollment Period
                   </h2>
                   <p className="text-xs text-zinc-500">
-                    Controls which trimester is active in the Subject Catalog and whether students can enlist.
+                    Switch trimesters with 1 click or open/close student subject enlistment.
                   </p>
                 </div>
               </div>
 
               <div className="flex flex-wrap items-center gap-3">
-                <div className="flex items-center gap-2">
-                  <label className="text-xs font-bold uppercase text-zinc-500">
-                    School Year
-                  </label>
+                {/* School Year Input */}
+                <div className="flex items-center border border-zinc-300 bg-zinc-50">
+                  <span className="px-2.5 text-[10px] font-bold uppercase tracking-wider text-zinc-500">
+                    SY
+                  </span>
                   <input
                     type="text"
                     value={academicConfig.schoolYear}
                     onChange={(e) =>
-                      setAcademicConfig({ ...academicConfig, schoolYear: e.target.value })
+                      setAcademicConfig({
+                        ...academicConfig,
+                        schoolYear: e.target.value,
+                      })
                     }
                     onBlur={() =>
-                      handleUpdateAcademicConfig({ schoolYear: academicConfig.schoolYear })
+                      handleUpdateAcademicConfig({
+                        schoolYear: academicConfig.schoolYear,
+                      })
                     }
-                    className="w-28 border border-zinc-300 bg-white px-2.5 py-1.5 font-mono text-xs font-bold focus:border-emerald-800 focus:outline-none"
+                    className="w-24 border-l border-zinc-300 bg-white px-2.5 py-1.5 font-mono text-xs font-bold text-emerald-950 focus:outline-none"
                   />
                 </div>
 
-                <div className="flex items-center gap-2">
-                  <label className="text-xs font-bold uppercase text-zinc-500">
-                    Active Term
-                  </label>
-                  <select
-                    value={academicConfig.currentTerm}
-                    disabled={isSavingConfig}
-                    onChange={(e) =>
-                      handleUpdateAcademicConfig({
-                        currentTerm: e.target.value as AcademicConfig["currentTerm"],
-                      })
-                    }
-                    className="border border-zinc-300 bg-white px-3 py-1.5 text-xs font-bold text-emerald-950 focus:border-emerald-800 focus:outline-none"
-                  >
-                    {TERMS.map((t) => (
-                      <option key={t} value={t}>
-                        {t}
-                      </option>
-                    ))}
-                  </select>
+                {/* Segmented Trimester Switcher (No Native Select) */}
+                <div className="inline-flex border border-zinc-300 bg-white">
+                  {TERMS.map((t) => {
+                    const active = academicConfig.currentTerm === t;
+                    return (
+                      <button
+                        key={t}
+                        type="button"
+                        disabled={isSavingConfig}
+                        onClick={() =>
+                          handleUpdateAcademicConfig({ currentTerm: t })
+                        }
+                        className={`px-3 py-1.5 text-xs font-bold transition-colors ${
+                          active
+                            ? "bg-emerald-900 text-white"
+                            : "text-zinc-600 hover:bg-emerald-50"
+                        }`}
+                      >
+                        {t.replace(" Trimester", " Term")}
+                      </button>
+                    );
+                  })}
                 </div>
 
+                {/* Gateway Toggle */}
                 <button
                   type="button"
                   disabled={isSavingConfig}
@@ -596,8 +853,8 @@ export default function AdminDashboardPage() {
                   }`}
                 >
                   {academicConfig.enrollmentOpen
-                    ? "Enrollment: Open (Click to Close)"
-                    : "Enrollment: Closed (Click to Open)"}
+                    ? "Gateway: Open"
+                    : "Gateway: Closed"}
                 </button>
               </div>
             </div>
@@ -618,7 +875,7 @@ export default function AdminDashboardPage() {
               </p>
               <div className="mt-3 flex items-center gap-2 text-xs font-medium text-emerald-800">
                 <span className="inline-block h-2 w-2 bg-emerald-600" />
-                Records on file
+                Active in DLSAU directory
               </div>
             </div>
 
@@ -638,7 +895,7 @@ export default function AdminDashboardPage() {
               </p>
               <div className="mt-3 flex items-center gap-2 text-xs font-medium text-zinc-600">
                 <span className="inline-block h-2 w-2 bg-emerald-500" />
-                Eligible for {academicConfig.currentTerm} enrollment
+                Ready for {academicConfig.currentTerm}
               </div>
             </div>
 
@@ -682,14 +939,14 @@ export default function AdminDashboardPage() {
                     Student List ({filteredStudents.length})
                   </h2>
                   <p className="text-xs text-zinc-500">
-                    Click &ldquo;Edit&rdquo; to update a student&apos;s details, term unit cap, clearance, or requirements.
+                    Select rows for batch clearance actions, or click &ldquo;Quick Clear&rdquo; / &ldquo;Edit&rdquo;.
                   </p>
                 </div>
               </div>
 
-              {/* Search & Multi-Filters */}
+              {/* Search & Custom Dropdown Filters */}
               <div className="flex flex-wrap items-center gap-2.5">
-                <div className="relative w-full sm:w-64">
+                <div className="relative w-full sm:w-60">
                   <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
                     <span className="h-3 w-1 bg-emerald-700" />
                   </div>
@@ -702,43 +959,73 @@ export default function AdminDashboardPage() {
                   />
                 </div>
 
-                <select
+                <CustomSelect
                   value={filterProgram}
-                  onChange={(e) => setFilterProgram(e.target.value)}
-                  className="border border-zinc-300 bg-white px-2.5 py-2 text-xs font-bold text-zinc-700 focus:border-emerald-800 focus:outline-none"
-                >
-                  <option value="All">All Programs</option>
-                  {PROGRAMS.map((p) => (
-                    <option key={p} value={p}>
-                      {p}
-                    </option>
-                  ))}
-                </select>
+                  onChange={setFilterProgram}
+                  className="w-48"
+                  options={[
+                    { label: "All Programs", value: "All" },
+                    ...PROGRAMS.map((p) => ({ label: p, value: p })),
+                  ]}
+                />
 
-                <select
+                <CustomSelect
                   value={filterYear}
-                  onChange={(e) => setFilterYear(e.target.value)}
-                  className="border border-zinc-300 bg-white px-2.5 py-2 text-xs font-bold text-zinc-700 focus:border-emerald-800 focus:outline-none"
-                >
-                  <option value="All">All Years</option>
-                  {YEAR_LEVELS.map((y) => (
-                    <option key={y} value={y}>
-                      {y}
-                    </option>
-                  ))}
-                </select>
+                  onChange={setFilterYear}
+                  className="w-32"
+                  options={[
+                    { label: "All Years", value: "All" },
+                    ...YEAR_LEVELS.map((y) => ({ label: y, value: y })),
+                  ]}
+                />
 
-                <select
+                <CustomSelect
                   value={filterClearance}
-                  onChange={(e) => setFilterClearance(e.target.value)}
-                  className="border border-zinc-300 bg-white px-2.5 py-2 text-xs font-bold text-zinc-700 focus:border-emerald-800 focus:outline-none"
-                >
-                  <option value="All">All Clearances</option>
-                  <option value="Cleared">Fully Cleared</option>
-                  <option value="Pending">Has Pending</option>
-                </select>
+                  onChange={setFilterClearance}
+                  className="w-36"
+                  options={[
+                    { label: "All Clearances", value: "All" },
+                    { label: "Fully Cleared", value: "Cleared" },
+                    { label: "Has Pending", value: "Pending" },
+                  ]}
+                />
               </div>
             </div>
+
+            {/* Batch Action Bar (Appears when rows are checked) */}
+            {selectedIds.size > 0 && (
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-emerald-200 bg-emerald-50/80 px-6 py-3">
+                <div className="flex items-center gap-2 text-xs font-bold text-emerald-950">
+                  <span className="h-3 w-1.5 bg-emerald-700" />
+                  {selectedIds.size} student{selectedIds.size === 1 ? "" : "s"} selected
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={isBulkUpdating}
+                    onClick={() => handleBulkClearance("cleared")}
+                    className="border-l-4 border-emerald-400 bg-emerald-900 px-3.5 py-1.5 text-xs font-bold text-white hover:bg-emerald-800 disabled:opacity-50"
+                  >
+                    Mark Selected Fully Cleared
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isBulkUpdating}
+                    onClick={() => handleBulkClearance("pending")}
+                    className="border border-zinc-300 bg-white px-3 py-1.5 text-xs font-bold text-zinc-700 hover:bg-zinc-100 disabled:opacity-50"
+                  >
+                    Reset Selected to Pending
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedIds(new Set())}
+                    className="px-2 py-1 text-xs font-bold text-zinc-500 hover:text-zinc-800"
+                  >
+                    Deselect
+                  </button>
+                </div>
+              </div>
+            )}
 
             {filteredStudents.length === 0 ? (
               <div className="px-6 py-16 text-center">
@@ -754,17 +1041,47 @@ export default function AdminDashboardPage() {
                   <table className="w-full text-left text-sm whitespace-nowrap">
                     <thead className="border-b border-emerald-900/10 bg-emerald-950/[0.03] text-[11px] uppercase tracking-wider text-emerald-950">
                       <tr>
-                        <th className="px-6 py-3.5 font-bold">Student No.</th>
+                        <th className="w-10 px-4 py-3.5">
+                          <button
+                            type="button"
+                            role="checkbox"
+                            aria-checked={allOnPageSelected}
+                            onClick={toggleSelectAllOnPage}
+                            className={`flex h-4 w-4 items-center justify-center border ${
+                              allOnPageSelected
+                                ? "border-emerald-800 bg-emerald-800 text-white"
+                                : "border-zinc-400 bg-white"
+                            }`}
+                          >
+                            {allOnPageSelected && (
+                              <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                viewBox="0 0 20 20"
+                                fill="currentColor"
+                                className="h-3 w-3"
+                              >
+                                <path
+                                  fillRule="evenodd"
+                                  d="M16.7 5.3a1 1 0 010 1.4l-7.5 7.5a1 1 0 01-1.4 0L3.3 9.7a1 1 0 011.4-1.4l3.8 3.8 6.8-6.8a1 1 0 011.4 0z"
+                                  clipRule="evenodd"
+                                />
+                              </svg>
+                            )}
+                          </button>
+                        </th>
+                        <th className="px-4 py-3.5 font-bold">Student No.</th>
                         <th className="px-6 py-3.5 font-bold">Name</th>
                         <th className="px-6 py-3.5 font-bold">Program / Section</th>
                         <th className="px-6 py-3.5 font-bold">Year Level</th>
                         <th className="px-6 py-3.5 font-bold">Clearance</th>
                         <th className="px-6 py-3.5 font-bold">Status</th>
-                        <th className="px-6 py-3.5 font-bold text-right">Action</th>
+                        <th className="px-6 py-3.5 font-bold text-right">Actions</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-zinc-200">
                       {paginatedStudents.map((student) => {
+                        const docId = student.id || student.studentId;
+                        const isSelected = selectedIds.has(docId);
                         const clearancesObj = student.clearances || {};
                         const clearedCount = CLEARANCE_GATES.filter(
                           (g) => clearancesObj[g.key] === "cleared"
@@ -776,10 +1093,42 @@ export default function AdminDashboardPage() {
 
                         return (
                           <tr
-                            key={student.id}
-                            className="group hover:bg-emerald-50/40 transition-colors"
+                            key={docId}
+                            className={`group transition-colors ${
+                              isSelected
+                                ? "bg-emerald-50/70"
+                                : "hover:bg-emerald-50/40"
+                            }`}
                           >
-                            <td className="px-6 py-4">
+                            <td className="px-4 py-4">
+                              <button
+                                type="button"
+                                role="checkbox"
+                                aria-checked={isSelected}
+                                onClick={() => toggleSelectRow(docId)}
+                                className={`flex h-4 w-4 items-center justify-center border ${
+                                  isSelected
+                                    ? "border-emerald-800 bg-emerald-800 text-white"
+                                    : "border-zinc-300 bg-white group-hover:border-emerald-600"
+                                }`}
+                              >
+                                {isSelected && (
+                                  <svg
+                                    xmlns="http://www.w3.org/2000/svg"
+                                    viewBox="0 0 20 20"
+                                    fill="currentColor"
+                                    className="h-3 w-3"
+                                  >
+                                    <path
+                                      fillRule="evenodd"
+                                      d="M16.7 5.3a1 1 0 010 1.4l-7.5 7.5a1 1 0 01-1.4 0L3.3 9.7a1 1 0 011.4-1.4l3.8 3.8 6.8-6.8a1 1 0 011.4 0z"
+                                      clipRule="evenodd"
+                                    />
+                                  </svg>
+                                )}
+                              </button>
+                            </td>
+                            <td className="px-4 py-4">
                               <div className="inline-flex items-center gap-2 font-mono text-xs font-bold text-emerald-950 bg-emerald-50 border border-emerald-200 px-2.5 py-1">
                                 <span className="h-2 w-1 bg-emerald-700" />
                                 {student.studentId}
@@ -862,12 +1211,25 @@ export default function AdminDashboardPage() {
                               </span>
                             </td>
                             <td className="px-6 py-4 text-right">
-                              <button
-                                onClick={() => openEditModal(student)}
-                                className="inline-flex items-center gap-2 border border-emerald-800 bg-white px-3.5 py-1.5 text-xs font-bold text-emerald-900 transition-all hover:bg-emerald-800 hover:text-white"
-                              >
-                                Edit
-                              </button>
+                              <div className="inline-flex items-center justify-end gap-2">
+                                {!isAllCleared && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleQuickClearStudent(student)}
+                                    title="Mark all 8 clearance offices as Cleared"
+                                    className="border border-emerald-300 bg-emerald-50 px-2.5 py-1.5 text-xs font-bold text-emerald-900 transition-colors hover:bg-emerald-700 hover:text-white"
+                                  >
+                                    Quick Clear ✓
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => openEditModal(student)}
+                                  className="inline-flex items-center gap-2 border border-emerald-800 bg-white px-3.5 py-1.5 text-xs font-bold text-emerald-900 transition-all hover:bg-emerald-800 hover:text-white"
+                                >
+                                  Edit
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         );
@@ -906,7 +1268,7 @@ export default function AdminDashboardPage() {
         </div>
       </main>
 
-      {/* Start New Term / Rollover Modal */}
+      {/* Start New Term / Rollover Modal (Zero Native Controls) */}
       {rolloverOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-emerald-950/60 p-4 backdrop-blur-xs">
           <div className="flex w-full max-w-lg flex-col overflow-hidden border-2 border-emerald-900 bg-white shadow-2xl">
@@ -945,82 +1307,42 @@ export default function AdminDashboardPage() {
                     value={rolloverSchoolYear}
                     onChange={(e) => setRolloverSchoolYear(e.target.value)}
                     placeholder="2026-2027"
-                    className="border border-zinc-300 bg-white px-3 py-2 text-sm font-mono focus:border-emerald-800 focus:outline-none"
+                    className="border border-zinc-300 bg-white px-3 py-2 text-xs font-mono font-bold focus:border-emerald-800 focus:outline-none"
                   />
                 </div>
                 <div className="flex flex-col gap-1.5">
                   <label className="text-xs font-bold text-zinc-700">
                     Target Trimester
                   </label>
-                  <select
+                  <CustomSelect
                     value={rolloverTerm}
-                    onChange={(e) =>
-                      setRolloverTerm(
-                        e.target.value as AcademicConfig["currentTerm"]
-                      )
+                    options={TERMS}
+                    onChange={(v) =>
+                      setRolloverTerm(v as AcademicConfig["currentTerm"])
                     }
-                    className="border border-zinc-300 bg-white px-3 py-2 text-sm font-bold focus:border-emerald-800 focus:outline-none"
-                  >
-                    {TERMS.map((t) => (
-                      <option key={t} value={t}>
-                        {t}
-                      </option>
-                    ))}
-                  </select>
+                  />
                 </div>
               </div>
 
-              <div className="space-y-2.5 border border-emerald-900/15 bg-emerald-50/40 p-4">
-                <label className="flex items-start gap-3 text-sm cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={resetClearancesOnRollover}
-                    onChange={(e) => setResetClearancesOnRollover(e.target.checked)}
-                    className="mt-1 h-4 w-4 accent-emerald-800"
-                  />
-                  <div>
-                    <span className="font-bold text-zinc-900 block">
-                      Reset all student clearances to Pending
-                    </span>
-                    <span className="text-xs text-zinc-600">
-                      Requires students to re-clear offices before enrolling in the new term.
-                    </span>
-                  </div>
-                </label>
-
-                <label className="flex items-start gap-3 text-sm cursor-pointer pt-2 border-t border-emerald-900/10">
-                  <input
-                    type="checkbox"
-                    checked={unlockBlocksOnRollover}
-                    onChange={(e) => setUnlockBlocksOnRollover(e.target.checked)}
-                    className="mt-1 h-4 w-4 accent-emerald-800"
-                  />
-                  <div>
-                    <span className="font-bold text-zinc-900 block">
-                      Unlock 1st-term fixed block students
-                    </span>
-                    <span className="text-xs text-zinc-600">
-                      Allows freshmen who were on a fixed block in the 1st Trimester to choose their own subjects now.
-                    </span>
-                  </div>
-                </label>
-
-                <label className="flex items-start gap-3 text-sm cursor-pointer pt-2 border-t border-emerald-900/10">
-                  <input
-                    type="checkbox"
-                    checked={promoteYearsOnRollover}
-                    onChange={(e) => setPromoteYearsOnRollover(e.target.checked)}
-                    className="mt-1 h-4 w-4 accent-emerald-800"
-                  />
-                  <div>
-                    <span className="font-bold text-zinc-900 block">
-                      Promote student Year Levels (+1 Year)
-                    </span>
-                    <span className="text-xs text-zinc-600">
-                      Only check this when starting a new School Year (1st Trimester).
-                    </span>
-                  </div>
-                </label>
+              <div className="space-y-2.5">
+                <CustomCheck
+                  checked={resetClearancesOnRollover}
+                  onChange={setResetClearancesOnRollover}
+                  label="Reset all student clearances to Pending"
+                  description="Requires students to re-clear offices before enrolling in the new term."
+                />
+                <CustomCheck
+                  checked={unlockBlocksOnRollover}
+                  onChange={setUnlockBlocksOnRollover}
+                  label="Unlock 1st-term fixed block students"
+                  description="Allows freshmen who were on a fixed block in the 1st Trimester to choose their own subjects and Gen Eds."
+                />
+                <CustomCheck
+                  checked={promoteYearsOnRollover}
+                  onChange={setPromoteYearsOnRollover}
+                  label="Promote student Year Levels (+1 Year)"
+                  description="Only check this when starting a new School Year (1st Trimester)."
+                />
               </div>
 
               <div className="flex items-center justify-end gap-3 border-t border-zinc-200 pt-4">
@@ -1044,7 +1366,7 @@ export default function AdminDashboardPage() {
         </div>
       )}
 
-      {/* Edit Student Profile Modal */}
+      {/* Edit Student Profile Modal (Zero Native Controls) */}
       {editingStudent && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-emerald-950/60 p-4 backdrop-blur-xs">
           <div className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden border-2 border-emerald-900 bg-white shadow-2xl">
@@ -1139,43 +1461,25 @@ export default function AdminDashboardPage() {
                     <label className="text-xs font-bold text-zinc-700">
                       Program
                     </label>
-                    <select
+                    <CustomSelect
                       value={editingStudent.program}
-                      onChange={(e) =>
-                        setEditingStudent({
-                          ...editingStudent,
-                          program: e.target.value,
-                        })
+                      options={PROGRAMS}
+                      onChange={(v) =>
+                        setEditingStudent({ ...editingStudent, program: v })
                       }
-                      className="border border-zinc-300 bg-white px-3 py-2 text-sm focus:border-emerald-800 focus:outline-none"
-                    >
-                      {PROGRAMS.map((p) => (
-                        <option key={p} value={p}>
-                          {p}
-                        </option>
-                      ))}
-                    </select>
+                    />
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <label className="text-xs font-bold text-zinc-700">
                       Year Level
                     </label>
-                    <select
+                    <CustomSelect
                       value={editingStudent.yearLevel}
-                      onChange={(e) =>
-                        setEditingStudent({
-                          ...editingStudent,
-                          yearLevel: e.target.value,
-                        })
+                      options={YEAR_LEVELS}
+                      onChange={(v) =>
+                        setEditingStudent({ ...editingStudent, yearLevel: v })
                       }
-                      className="border border-zinc-300 bg-white px-3 py-2 text-sm focus:border-emerald-800 focus:outline-none"
-                    >
-                      {YEAR_LEVELS.map((y) => (
-                        <option key={y} value={y}>
-                          {y}
-                        </option>
-                      ))}
-                    </select>
+                    />
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <label className="text-xs font-bold text-zinc-700">
@@ -1190,63 +1494,79 @@ export default function AdminDashboardPage() {
                         })
                       }
                       placeholder="e.g. BSCS1A"
-                      className="border border-zinc-300 bg-white px-3 py-2 text-sm font-mono focus:border-emerald-800 focus:outline-none"
+                      className="border border-zinc-300 bg-white px-3 py-2 text-xs font-mono font-bold focus:border-emerald-800 focus:outline-none"
                     />
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <label className="text-xs font-bold text-zinc-700">
                       Enrollment Status
                     </label>
-                    <select
+                    <CustomSelect
                       value={editingStudent.enrollmentStatus}
-                      onChange={(e) =>
+                      options={ENROLLMENT_STATUSES}
+                      onChange={(v) =>
                         setEditingStudent({
                           ...editingStudent,
-                          enrollmentStatus: e.target.value,
+                          enrollmentStatus: v,
                         })
                       }
-                      className="border border-zinc-300 bg-white px-3 py-2 text-sm focus:border-emerald-800 focus:outline-none"
-                    >
-                      {ENROLLMENT_STATUSES.map((s) => (
-                        <option key={s} value={s}>
-                          {s}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="flex flex-col gap-1.5">
-                    <label className="text-xs font-bold text-zinc-700">
-                      Max Units Allowed (Overload Override)
-                    </label>
-                    <input
-                      type="number"
-                      min={3}
-                      max={30}
-                      value={editingStudent.maxUnits}
-                      onChange={(e) =>
-                        setEditingStudent({
-                          ...editingStudent,
-                          maxUnits: Number(e.target.value),
-                        })
-                      }
-                      className="border border-zinc-300 bg-white px-3 py-2 text-sm font-mono focus:border-emerald-800 focus:outline-none"
                     />
                   </div>
-                  <div className="flex flex-col justify-end">
-                    <label className="flex items-center gap-2.5 border border-zinc-300 bg-white px-3 py-2 text-xs font-bold text-zinc-800 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={!!editingStudent.blockEnrolled}
-                        onChange={(e) =>
+
+                  {/* Custom Unit Stepper (Replaces Native Number Spinner) */}
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-xs font-bold text-zinc-700">
+                      Max Units Allowed
+                    </label>
+                    <div className="flex items-center border border-zinc-300 bg-white">
+                      <button
+                        type="button"
+                        onClick={() =>
                           setEditingStudent({
                             ...editingStudent,
-                            blockEnrolled: e.target.checked,
+                            maxUnits: Math.max(
+                              3,
+                              (Number(editingStudent.maxUnits) || 21) - 1
+                            ),
                           })
                         }
-                        className="h-4 w-4 accent-emerald-800"
-                      />
-                      Fixed Block Schedule (Lock Add/Drop)
-                    </label>
+                        className="px-3 py-2 text-xs font-bold text-zinc-700 hover:bg-emerald-50 border-r border-zinc-300"
+                      >
+                        −
+                      </button>
+                      <span className="flex-1 text-center font-mono text-xs font-bold text-emerald-950">
+                        {editingStudent.maxUnits} units
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setEditingStudent({
+                            ...editingStudent,
+                            maxUnits: Math.min(
+                              30,
+                              (Number(editingStudent.maxUnits) || 21) + 1
+                            ),
+                          })
+                        }
+                        className="px-3 py-2 text-xs font-bold text-zinc-700 hover:bg-emerald-50 border-l border-zinc-300"
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Custom Rectangular Checkbox for Block Lock */}
+                  <div className="flex flex-col justify-end">
+                    <CustomCheck
+                      checked={!!editingStudent.blockEnrolled}
+                      onChange={(next) =>
+                        setEditingStudent({
+                          ...editingStudent,
+                          blockEnrolled: next,
+                        })
+                      }
+                      label="Fixed Block Schedule (Lock Add/Drop)"
+                    />
                   </div>
                 </div>
               </div>
