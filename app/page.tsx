@@ -3,13 +3,15 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
+import Link from "next/link";
 import { doc, getDoc, collection, query, where, getDocs } from "firebase/firestore";
 import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   signOut,
   onAuthStateChanged,
-} from "firebase/auth";import { auth, db } from "@/lib/firebase";
+} from "firebase/auth";
+import { auth, db } from "@/lib/firebase";
 
 // Where each role lands after signing in. Any role not listed here is not allowed in.
 const ROLE_REDIRECTS: Record<string, string> = {
@@ -19,6 +21,11 @@ const ROLE_REDIRECTS: Record<string, string> = {
 };
 
 const SESSION_KEYS = ["mock_user_role", "mock_user_name", "mock_user_id"] as const;
+
+// Creating a login on first sign-in lets anyone claim any student number or staff email whose
+// Auth account doesn't exist yet. It is only allowed on a local dev machine.
+// In production, create logins on the server when an application is approved.
+const AUTO_CREATE_LOGINS = process.env.NODE_ENV === "development";
 
 function normalizeIdentifier(raw: string): string {
   const trimmed = raw.trim();
@@ -57,48 +64,40 @@ function authErrorMessage(err: unknown): string {
   return "Incorrect student number, email, or password.";
 }
 
-// Runs after sign-in, resolving profile from `users` (staff) or `students` (by Student ID or Email)
+// Resolves the profile from `users` (staff) or `students` (by student number or school email)
 async function loadProfile(
   cleanId: string
 ): Promise<{ role: string; name: string; studentId: string } | null> {
   if (cleanId.includes("@")) {
-    // 1. Check staff `users` collection
-    const staffSnap = await getDocs(
-      query(collection(db, "users"), where("email", "==", cleanId))
-    );
+    // 1. Staff
+    const staffSnap = await getDocs(query(collection(db, "users"), where("email", "==", cleanId)));
     if (!staffSnap.empty) {
       const data = staffSnap.docs[0].data();
-      return {
-        role: String(data.role ?? ""),
-        name: data.name || cleanId,
-        studentId: cleanId,
-      };
+      return { role: String(data.role ?? ""), name: data.name || cleanId, studentId: cleanId };
     }
 
-    // 2. Check `students` collection by school email
-    const studentEmailSnap = await getDocs(
-      query(collection(db, "students"), where("email", "==", cleanId))
-    );
-    if (!studentEmailSnap.empty) {
-      const docSnap = studentEmailSnap.docs[0];
+    // 2. Student, by school email
+    const studentSnap = await getDocs(query(collection(db, "students"), where("email", "==", cleanId)));
+    if (!studentSnap.empty) {
+      const docSnap = studentSnap.docs[0];
       const data = docSnap.data();
       return {
         role: "student",
         name: `${data.firstName ?? ""} ${data.lastName ?? ""}`.trim() || "Student",
-        studentId: data.studentId || docSnap.id,
+        studentId: data.studentId || data.studentNumber || docSnap.id,
       };
     }
     return null;
   }
 
-  // 3. Look up by student number (e.g. 2026-00-000001)
+  // 3. Student, by student number (e.g. 2026-00-000001)
   const snap = await getDoc(doc(db, "students", cleanId));
   if (!snap.exists()) return null;
   const data = snap.data();
   return {
     role: "student",
     name: `${data.firstName ?? ""} ${data.lastName ?? ""}`.trim() || "Student",
-    studentId: data.studentId || cleanId,
+    studentId: data.studentId || data.studentNumber || cleanId,
   };
 }
 
@@ -175,47 +174,33 @@ export default function LoginPage() {
     setLoading(true);
     setSubmitError("");
 
-let signedIn = false;
+    let signedIn = false;
     try {
-      // 1. Determine Auth login email (lookup student number if university email was entered)
-      let authEmail = cleanId.includes("@") ? cleanId : `${cleanId}@dlsau.edu.ph`;
+      // 1. Authenticate first. Student numbers sign in as <student number>@dlsau.edu.ph, which is also
+      //    the school email stored on profiles created by the admissions gateway.
+      const authEmail = cleanId.includes("@") ? cleanId : `${cleanId}@dlsau.edu.ph`;
 
-      if (cleanId.includes("@")) {
-        const studentByEmail = await getDocs(
-          query(collection(db, "students"), where("email", "==", cleanId))
-        );
-        if (!studentByEmail.empty) {
-          const stData = studentByEmail.docs[0].data();
-          const targetId = stData.studentId || studentByEmail.docs[0].id;
-          authEmail = `${targetId}@dlsau.edu.ph`;
-        }
-      }
-try {
+      try {
         await signInWithEmailAndPassword(auth, authEmail, password);
-        signedIn = true;
-      } catch (signInErr: any) {
-        // If the account exists in Firestore (`users` or `students`) but hasn't been created
-        // in Firebase Authentication yet, auto-create their Firebase Auth login on first sign-in:
-        const existingProfile = await loadProfile(cleanId);
-        if (
-          existingProfile &&
-          (signInErr?.code === "auth/user-not-found" ||
-            signInErr?.code === "auth/invalid-credential")
-        ) {
+      } catch (signInErr) {
+        const code = (signInErr as { code?: string })?.code;
+        const missingAccount = code === "auth/user-not-found" || code === "auth/invalid-credential";
+        if (AUTO_CREATE_LOGINS && missingAccount) {
+          // Dev only: create the login if a matching profile exists
+          const existing = await loadProfile(cleanId);
+          if (!existing) throw signInErr;
           await createUserWithEmailAndPassword(auth, authEmail, password);
-          signedIn = true;
         } else {
           throw signInErr;
         }
       }
+      signedIn = true;
 
-      // 2. Load profile and verify portal role
+      // 2. Load the profile and check the role
       const profile = await loadProfile(cleanId);
       if (!profile || !ROLE_REDIRECTS[profile.role]) {
         await signOut(auth);
-        setSubmitError(
-          "Your account isn't set up for the portal yet. Please contact the Registrar's Office."
-        );
+        setSubmitError("Your account isn't set up for the portal yet. Please contact the Registrar's Office.");
         setPassword("");
         setLoading(false);
         return;
@@ -317,8 +302,24 @@ try {
             </div>
           </div>
 
-          <div className="space-y-6">
-            <div className="border border-emerald-700/60 border-l-4 border-l-emerald-400 bg-emerald-950/65 p-5 backdrop-blur-xs">
+          <div className="space-y-4">
+            {/* Enroll now (desktop) */}
+            <div className="flex flex-col gap-4 border border-emerald-400/60 border-l-4 border-l-emerald-400 bg-emerald-950/70 p-5 backdrop-blur-xs xl:flex-row xl:items-center xl:justify-between">
+              <div>
+                <span className="text-xs font-bold uppercase tracking-wider text-emerald-300">New to DLSAU?</span>
+                <p className="mt-1 text-sm font-semibold text-white">
+                  Freshmen and transferees can apply for admission online.
+                </p>
+              </div>
+              <Link
+                href="/apply"
+                className="shrink-0 self-start border-l-4 border-emerald-400 bg-white px-5 py-2.5 text-sm font-bold text-emerald-950 transition-colors hover:bg-emerald-50 xl:self-auto"
+              >
+                Enroll now →
+              </Link>
+            </div>
+
+            <div className="border border-emerald-700/60 border-l-4 border-l-emerald-600 bg-emerald-950/65 p-5 backdrop-blur-xs">
               <span className="text-xs font-bold uppercase tracking-wider text-emerald-300">
                 Student &amp; Staff Portal
               </span>
@@ -331,7 +332,7 @@ try {
               </p>
             </div>
 
-            <div className="flex items-center justify-between text-xs text-emerald-100/90 font-medium">
+            <div className="flex items-center justify-between pt-2 text-xs text-emerald-100/90 font-medium">
               <span>© {new Date().getFullYear()} De La Salle Araneta University</span>
               <span>Salvador Araneta Campus, Malabon</span>
             </div>
@@ -354,12 +355,18 @@ try {
                 priority
               />
             </div>
-            <div>
+            <div className="min-w-0">
               <h1 className="text-2xl font-bold tracking-tight text-emerald-950 leading-none">PATHWAYS</h1>
               <p className="mt-1.5 text-xs font-bold uppercase tracking-wider text-emerald-800">
                 De La Salle Araneta University
               </p>
             </div>
+            <Link
+              href="/apply"
+              className="ml-auto shrink-0 border border-emerald-800 px-3 py-2 text-xs font-bold text-emerald-900 hover:bg-emerald-800 hover:text-white"
+            >
+              Enroll now
+            </Link>
           </div>
 
           {/* Form card */}
@@ -521,6 +528,20 @@ try {
                 </div>
               </div>
             </div>
+          </div>
+
+          {/* Enroll now (all screen sizes) */}
+          <div className="mt-4 flex flex-col gap-3 border border-emerald-900/15 border-l-4 border-l-emerald-700 bg-white px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-sm font-bold text-zinc-900">New student?</p>
+              <p className="text-xs text-zinc-600">Freshmen and transferees can apply for admission online.</p>
+            </div>
+            <Link
+              href="/apply"
+              className="shrink-0 self-start border-l-4 border-emerald-400 bg-emerald-900 px-5 py-2.5 text-sm font-bold text-white transition-colors hover:bg-emerald-800 sm:self-auto"
+            >
+              Enroll now →
+            </Link>
           </div>
         </div>
       </div>

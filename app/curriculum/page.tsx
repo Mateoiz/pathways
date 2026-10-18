@@ -19,9 +19,10 @@ const PROGRAMS = [
   { id: "bs-computer-science", label: "BS Computer Science" },
   { id: "bs-accountancy", label: "BS Accountancy" },
   { id: "bsba-marketing-management", label: "BSBA Marketing Management" },
+  { id: "doctor-of-veterinary-medicine", label: "Doctor of Veterinary Medicine" },
 ];
 
-const YEARS = ["1st Year", "2nd Year", "3rd Year", "4th Year"];
+const YEARS = ["1st Year", "2nd Year", "3rd Year", "4th Year", "5th Year", "6th Year"];
 const TERMS = ["1st Trimester", "2nd Trimester", "3rd Trimester"];
 
 const DAY_PRESETS = [

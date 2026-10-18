@@ -27,8 +27,16 @@ const PROGRAMS = [
   "BS Computer Science",
   "BS Accountancy",
   "BSBA Marketing Management",
+  "Doctor of Veterinary Medicine",
 ];
-const YEAR_LEVELS = ["1st Year", "2nd Year", "3rd Year", "4th Year"];
+const YEAR_LEVELS = [
+  "1st Year",
+  "2nd Year",
+  "3rd Year",
+  "4th Year",
+  "5th Year",
+  "6th Year",
+];
 const ENROLLMENT_STATUSES = ["Regular", "Irregular", "Returnee", "Transferee"];
 const TERMS: AcademicConfig["currentTerm"][] = [
   "1st Trimester",
@@ -412,13 +420,14 @@ export default function AdminDashboardPage() {
       const pendingClearances: Record<string, string> = {};
       CLEARANCE_GATES.forEach(({ key }) => (pendingClearances[key] = "pending"));
 
-      const nextYearMap: Record<string, string> = {
+const nextYearMap: Record<string, string> = {
         "1st Year": "2nd Year",
         "2nd Year": "3rd Year",
         "3rd Year": "4th Year",
-        "4th Year": "4th Year",
+        "4th Year": "5th Year",
+        "5th Year": "6th Year",
+        "6th Year": "6th Year",
       };
-
       const updatedLocalStudents = [...students];
       for (let i = 0; i < students.length; i += 450) {
         const batch = writeBatch(db);
@@ -1210,7 +1219,7 @@ export default function AdminDashboardPage() {
                                 {student.enrollmentStatus || "Regular"}
                               </span>
                             </td>
-                            <td className="px-6 py-4 text-right">
+  <td className="px-6 py-4 text-right">
                               <div className="inline-flex items-center justify-end gap-2">
                                 {!isAllCleared && (
                                   <button
@@ -1222,6 +1231,13 @@ export default function AdminDashboardPage() {
                                     Quick Clear ✓
                                   </button>
                                 )}
+                                <Link
+                                  href={`/admin/students/new?studentId=${student.studentId || docId}`}
+                                  title="Open full 10-section Student Information Sheet"
+                                  className="border border-zinc-300 bg-white px-3 py-1.5 text-xs font-bold text-zinc-700 transition-colors hover:border-emerald-800 hover:bg-emerald-50 hover:text-emerald-950"
+                                >
+                                  Full Profile →
+                                </Link>
                                 <button
                                   type="button"
                                   onClick={() => openEditModal(student)}
@@ -1386,13 +1402,21 @@ export default function AdminDashboardPage() {
                   </p>
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => setEditingStudent(null)}
-                className="border border-emerald-700 bg-emerald-800/60 px-2.5 py-1 text-xs font-bold text-white hover:bg-emerald-700"
-              >
-                Close ✕
-              </button>
+<div className="flex items-center gap-2">
+                <Link
+                  href={`/admin/students/new?studentId=${editingStudent.studentId || editingStudent.id}`}
+                  className="border border-emerald-400/50 bg-emerald-950/60 px-3 py-1 text-xs font-bold text-emerald-100 hover:bg-emerald-800"
+                >
+                  Open Full Info Sheet →
+                </Link>
+                <button
+                  type="button"
+                  onClick={() => setEditingStudent(null)}
+                  className="border border-emerald-700 bg-emerald-800/60 px-2.5 py-1 text-xs font-bold text-white hover:bg-emerald-700"
+                >
+                  Close ✕
+                </button>
+              </div>
             </div>
 
             <form

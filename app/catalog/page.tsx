@@ -29,7 +29,7 @@ const GENED_TAB = "Gen Ed Electives";
 const ALL_PROGRAM_TAB = "Full Program Flowchart";
 
 const TERMS = ["1st Trimester", "2nd Trimester", "3rd Trimester"];
-const YEAR_OPTIONS = ["1st Year", "2nd Year", "3rd Year", "4th Year"];
+const YEAR_OPTIONS = ["1st Year", "2nd Year", "3rd Year", "4th Year", "5th Year", "6th Year"];
 
 type Toast = { type: "success" | "error"; text: string };
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { doc, setDoc, getDoc, collection, getDocs } from "firebase/firestore";
 import { db, createAuthUserWithoutLoggingOut } from "@/lib/firebase";
@@ -14,8 +14,16 @@ const PROGRAMS = [
   "BS Computer Science",
   "BS Accountancy",
   "BSBA Marketing Management",
+  "Doctor of Veterinary Medicine",
 ];
-const YEAR_LEVELS = ["1st Year", "2nd Year", "3rd Year", "4th Year"];
+const YEAR_LEVELS = [
+  "1st Year",
+  "2nd Year",
+  "3rd Year",
+  "4th Year",
+  "5th Year",
+  "6th Year",
+];
 const ENROLLMENT_STATUSES = ["Regular", "Irregular", "Returnee", "Transferee"];
 const ADMISSION_TYPES = ["Freshman", "Transferee", "Returnee", "Cross-Enrollee", "Foreign Student"];
 const SEMESTERS = ["1st Trimester", "2nd Trimester", "3rd Trimester"];
@@ -24,6 +32,7 @@ const PROGRAM_PREFIXES: Record<string, string> = {
   "BS Computer Science": "BSCS",
   "BS Accountancy": "BACC",
   "BSBA Marketing Management": "MKTG",
+  "Doctor of Veterinary Medicine": "VETM",
 };
 function generateUniversityEmail(firstName: string, lastName: string): string {
   const sanitize = (str: string) =>
@@ -296,6 +305,10 @@ function Select({
 
 export default function CreateStudentProfilePage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const editStudentId = searchParams.get("studentId");
+  const isEditingExisting = !!editStudentId;
+
   const [role, setRole] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [toastMessage, setToastMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
@@ -330,10 +343,103 @@ export default function CreateStudentProfilePage() {
 
 useEffect(() => {
     const storedRole = localStorage.getItem("mock_user_role");
-    if (!storedRole || storedRole !== "admin") {
+    if (storedRole !== "admin" && storedRole !== "registrar") {
       router.push("/");
+      return;
+    }
+    setRole(storedRole);
+
+    if (editStudentId) {
+      // Load existing student profile (e.g. from Approved Application or Admin Directory)
+      getDoc(doc(db, "students", editStudentId)).then((snap) => {
+        if (!snap.exists()) return;
+        const d = snap.data();
+        setFormData({
+          personal: {
+            studentId: d.studentId || editStudentId,
+            lrn: d.personal?.lrn || "",
+            firstName: d.personal?.firstName || d.firstName || "",
+            middleName: d.personal?.middleName || d.middleName || "",
+            lastName: d.personal?.lastName || d.lastName || "",
+            suffix: d.personal?.suffix || d.suffix || "",
+            dateOfBirth: d.personal?.dateOfBirth || d.birthDate || "",
+            placeOfBirth: d.personal?.placeOfBirth || "",
+            sex: d.personal?.sex || d.sex || "",
+            civilStatus: d.personal?.civilStatus || "Single",
+            citizenship: d.personal?.citizenship || d.citizenship || "Filipino",
+            religion: d.personal?.religion || "",
+          },
+          contact: {
+            email: d.contact?.email || d.email || "",
+            personalEmail: d.contact?.personalEmail || d.personalEmail || "",
+            mobileNumber: d.contact?.mobileNumber || d.mobile || "",
+          },
+          address: {
+            street: d.address?.street || d.address?.line || "",
+            barangay: d.address?.barangay || "",
+            city: d.address?.city || "",
+            province: d.address?.province || "",
+            zipCode: d.address?.zipCode || d.address?.zip || "",
+          },
+          family: {
+            fatherName: d.family?.fatherName || "",
+            fatherOccupation: d.family?.fatherOccupation || "",
+            fatherContact: d.family?.fatherContact || "",
+            motherName: d.family?.motherName || "",
+            motherMaidenName: d.family?.motherMaidenName || "",
+            motherOccupation: d.family?.motherOccupation || "",
+            motherContact: d.family?.motherContact || "",
+            guardianName: d.family?.guardianName || d.guardian?.name || "",
+            guardianRelationship: d.family?.guardianRelationship || d.guardian?.relationship || "Mother",
+            guardianContact: d.family?.guardianContact || d.guardian?.mobile || "",
+          },
+          emergency: {
+            contactName: d.emergency?.contactName || d.guardian?.name || "",
+            relationship: d.emergency?.relationship || d.guardian?.relationship || "Mother",
+            contactNumber: d.emergency?.contactNumber || d.guardian?.mobile || "",
+          },
+          academic: {
+            program: d.academic?.program || d.program || "BS Computer Science",
+            major: d.academic?.major || "",
+            yearLevel: d.academic?.yearLevel || d.yearLevel || "1st Year",
+            section: d.academic?.section || d.section || "BSCS1A",
+            enrollmentStatus: d.academic?.enrollmentStatus || d.enrollmentStatus || "Regular",
+            admissionType: d.academic?.admissionType || "Freshman",
+            schoolYearAdmitted: d.academic?.schoolYearAdmitted || `${currentYear}-${currentYear + 1}`,
+            semesterAdmitted: d.academic?.semesterAdmitted || "1st Trimester",
+            scholarship: d.academic?.scholarship || "None",
+            maxUnits: String(d.maxUnits ?? d.academic?.maxUnits ?? "23"),
+            blockEnrolled: d.blockEnrolled === false ? "No" : "Yes",
+          },
+          previousSchool: {
+            shsName: d.previousSchool?.shsName || d.previousSchool?.name || "",
+            shsStrand: d.previousSchool?.shsStrand || d.previousSchool?.track || "STEM",
+            yearGraduated: d.previousSchool?.yearGraduated || `${currentYear}`,
+            gwa: d.previousSchool?.gwa || "",
+            lastCollegeAttended: d.previousSchool?.lastCollegeAttended || "",
+          },
+          health: {
+            bloodType: d.health?.bloodType || "Unknown",
+            allergies: d.health?.allergies || "",
+            medicalNotes: d.health?.medicalNotes || "",
+            pwd: d.health?.pwd || "No",
+          },
+          clearances: {
+            ...INITIAL_FORM_STATE.clearances,
+            ...Object.fromEntries(
+              Object.entries(d.clearances || {}).map(([k, v]) => [
+                k,
+                v === "cleared" || v === true ? "cleared" : "pending",
+              ])
+            ),
+          },
+          requirements: {
+            ...INITIAL_FORM_STATE.requirements,
+            ...(d.requirements || {}),
+          },
+        });
+      });
     } else {
-      setRole(storedRole);
       generateNextStudentId();
       getAcademicConfig().then((cfg) => {
         setFormData((prev) => ({
@@ -342,12 +448,12 @@ useEffect(() => {
             ...prev.academic,
             schoolYearAdmitted: cfg.schoolYear,
             semesterAdmitted: cfg.currentTerm,
-            maxUnits: String(cfg.maxUnitsDefault || 21),
+            maxUnits: String(cfg.maxUnitsDefault || 23),
           },
         }));
       });
     }
-  }, [router]);
+  }, [router, editStudentId]);
 
   function showToast(type: "success" | "error", text: string) {
     setToastMessage({ type, text });
@@ -453,48 +559,58 @@ if (group === "academic") {
       const studentId = formData.personal.studentId.trim();
       const studentRef = doc(db, "students", studentId);
 
-      const existing = await getDoc(studentRef);
-      if (existing.exists()) {
+const existing = await getDoc(studentRef);
+      if (existing.exists() && !isEditingExisting) {
         showToast("error", `Student no. ${studentId} already exists.`);
         return;
       }
 
-      // Create live Firebase Authentication account without logging out Admin
+      // Create live Firebase Authentication account if not already created
       const authLoginEmail = `${studentId}@dlsau.edu.ph`;
       const defaultPassword = "password123";
-      let authUid = "";
-      try {
-        authUid = await createAuthUserWithoutLoggingOut(authLoginEmail, defaultPassword);
-      } catch (authErr: any) {
-        if (authErr?.code !== "auth/email-already-in-use") {
-          throw authErr;
+      let authUid = existing.exists() ? existing.data()?.uid || "" : "";
+      if (!authUid) {
+        try {
+          authUid = await createAuthUserWithoutLoggingOut(authLoginEmail, defaultPassword);
+        } catch (authErr: any) {
+          if (authErr?.code !== "auth/email-already-in-use") {
+            throw authErr;
+          }
         }
       }
 
       const now = new Date().toISOString();
 
-      await setDoc(studentRef, {
-        ...formData,
-        ...(authUid ? { uid: authUid } : {}),
-        authEmail: authLoginEmail,
-        studentId,
-        firstName: formData.personal.firstName.trim(),
-        lastName: formData.personal.lastName.trim(),
-        email: formData.contact.email.trim().toLowerCase(),
-        program: formData.academic.program,
-        yearLevel: formData.academic.yearLevel,
-        section: formData.academic.section.trim(),
-        enrollmentStatus: formData.academic.enrollmentStatus,
-        maxUnits: Number(formData.academic.maxUnits) || 21,
-        blockEnrolled: formData.academic.blockEnrolled === "Yes",
-        role: "student",
-        createdAt: now,
-        updatedAt: now,
-      });
+      await setDoc(
+        studentRef,
+        {
+          ...formData,
+          ...(authUid ? { uid: authUid } : {}),
+          authEmail: authLoginEmail,
+          studentId,
+          firstName: formData.personal.firstName.trim(),
+          lastName: formData.personal.lastName.trim(),
+          email: formData.contact.email.trim().toLowerCase(),
+          program: formData.academic.program,
+          yearLevel: formData.academic.yearLevel,
+          section: formData.academic.section.trim(),
+          enrollmentStatus: formData.academic.enrollmentStatus,
+          maxUnits: Number(formData.academic.maxUnits) || 23,
+          blockEnrolled: formData.academic.blockEnrolled === "Yes",
+          role: "student",
+          ...(existing.exists() ? {} : { createdAt: now }),
+          updatedAt: now,
+        },
+        { merge: true }
+      );
 
-      showToast("success", `Student ${studentId} created! (Default password: ${defaultPassword})`);
-      setFormData(INITIAL_FORM_STATE);
-      await generateNextStudentId();
+      if (isEditingExisting) {
+        showToast("success", `Completed and saved profile for ${studentId}!`);
+      } else {
+        showToast("success", `Student ${studentId} created! (Default password: ${defaultPassword})`);
+        setFormData(INITIAL_FORM_STATE);
+        await generateNextStudentId();
+      }
     } catch (error: any) {
       console.error("Error creating student profile:", error);
       showToast("error", error?.message || "Couldn't save the student. Please try again.");
@@ -541,16 +657,22 @@ if (group === "academic") {
 
         <div className="mx-auto max-w-4xl p-4 sm:p-8 lg:p-10">
           <header className="mb-8 border border-emerald-900/15 border-l-4 border-l-emerald-800 bg-white px-6 py-5 shadow-xs">
-            <div className="flex items-center gap-2 text-xs font-semibold text-zinc-500 mb-2 uppercase tracking-wider">
+<div className="flex items-center gap-2 text-xs font-semibold text-zinc-500 mb-2 uppercase tracking-wider">
               <Link href="/admin/students" className="hover:text-emerald-800 transition-colors">
                 Student Profiles
               </Link>
               <span>/</span>
-              <span className="text-zinc-900">Add Student</span>
+              <span className="text-zinc-900">
+                {isEditingExisting ? `Complete Profile (${personal.studentId})` : "Add Student"}
+              </span>
             </div>
-            <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-emerald-950">Add Student</h1>
+            <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-emerald-950">
+              {isEditingExisting ? "Complete / Edit Student Information Sheet" : "Add Student"}
+            </h1>
             <p className="mt-1 text-sm text-zinc-500">
-              Fill in the student&apos;s details to add a new record.
+              {isEditingExisting
+                ? `Review and complete the 10-section student record for ${personal.firstName || "this student"} (${personal.studentId}).`
+                : "Fill in the student's details to add a new record."}
             </p>
           </header>
 
