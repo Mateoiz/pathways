@@ -4,7 +4,8 @@ import { useState, useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { doc, setDoc, getDoc, collection, getDocs } from "firebase/firestore";
-import { db, createAuthUserWithoutLoggingOut } from "@/lib/firebase";
+import { onAuthStateChanged } from "firebase/auth";
+import { auth, db, createAuthUserWithoutLoggingOut } from "@/lib/firebase";
 
 import AdminNavbar from "@/components/AdminNavbar";
 import { getAcademicConfig } from "@/lib/academicConfig";
@@ -342,14 +343,29 @@ export default function CreateStudentProfilePage() {
   }
 
 useEffect(() => {
-    const storedRole = localStorage.getItem("mock_user_role");
-    if (storedRole !== "admin" && storedRole !== "registrar") {
-      router.push("/");
-      return;
-    }
-    setRole(storedRole);
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (!user) {
+        router.push("/");
+        return;
+      }
 
-    if (editStudentId) {
+      const tokenResult = await user.getIdTokenResult(true);
+      const claimRole = tokenResult.claims.role as string | undefined;
+
+      if (claimRole !== "admin" && claimRole !== "registrar") {
+        console.error(
+          "Signed in as",
+          user.email,
+          "but token has role claim:",
+          claimRole ?? "(none)"
+        );
+        router.push("/");
+        return;
+      }
+
+      setRole(claimRole);
+
+      if (editStudentId) {
       // Load existing student profile (e.g. from Approved Application or Admin Directory)
       getDoc(doc(db, "students", editStudentId)).then((snap) => {
         if (!snap.exists()) return;
@@ -439,20 +455,23 @@ useEffect(() => {
           },
         });
       });
-    } else {
-      generateNextStudentId();
-      getAcademicConfig().then((cfg) => {
-        setFormData((prev) => ({
-          ...prev,
-          academic: {
-            ...prev.academic,
-            schoolYearAdmitted: cfg.schoolYear,
-            semesterAdmitted: cfg.currentTerm,
-            maxUnits: String(cfg.maxUnitsDefault || 23),
-          },
-        }));
-      });
-    }
+} else {
+        generateNextStudentId();
+        getAcademicConfig().then((cfg) => {
+          setFormData((prev) => ({
+            ...prev,
+            academic: {
+              ...prev.academic,
+              schoolYearAdmitted: cfg.schoolYear,
+              semesterAdmitted: cfg.currentTerm,
+              maxUnits: String(cfg.maxUnitsDefault || 23),
+            },
+          }));
+        });
+      }
+    });
+
+    return () => unsubscribe();
   }, [router, editStudentId]);
 
   function showToast(type: "success" | "error", text: string) {
@@ -581,7 +600,7 @@ const existing = await getDoc(studentRef);
 
       const now = new Date().toISOString();
 
-      await setDoc(
+ await setDoc(
         studentRef,
         {
           ...formData,
@@ -598,6 +617,7 @@ const existing = await getDoc(studentRef);
           maxUnits: Number(formData.academic.maxUnits) || 23,
           blockEnrolled: formData.academic.blockEnrolled === "Yes",
           role: "student",
+          mustChangePassword: existing.exists() ? (existing.data().mustChangePassword ?? false) : true,
           ...(existing.exists() ? {} : { createdAt: now }),
           updatedAt: now,
         },

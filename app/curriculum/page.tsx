@@ -376,8 +376,8 @@ export default function AdminCurriculumPage() {
                     }`}
                   >
                     {activeTermEntry.block
-                      ? "🔒 Fixed Block (Auto-Enrolled)"
-                      : "🔓 Flexible Selection (Open Add/Drop)"}
+                      ? "Fixed Block (Auto-Enrolled)"
+                      : "Flexible Selection (Open Add/Drop)"}
                   </button>
                 </div>
               )}

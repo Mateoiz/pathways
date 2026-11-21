@@ -4,33 +4,29 @@ import { useEffect, useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
-import { auth } from "@/lib/firebase";
+import { collection, onSnapshot, query, where } from "firebase/firestore";
+import { auth, db } from "@/lib/firebase";
 
 const ADMIN_LINKS = [
   {
-    label: "System Health",
+    label: "Dashboard",
     href: "/dashboard",
     icon: "M3 13h4l3-8 4 14 3-6h4",
   },
   {
-    label: "Student Profiles",
+    label: "Admissions",
+    href: "/applications",
+    icon: "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4",
+  },
+  {
+    label: "Student Records",
     href: "/admin/students",
     icon: "M15 19v-1a4 4 0 00-4-4H7a4 4 0 00-4 4v1M9 11a3 3 0 100-6 3 3 0 000 6zM21 19v-1a4 4 0 00-3-3.87M16 5.13a3 3 0 010 5.74",
   },
   {
-    label: "Curriculum Config",
+    label: "Curriculum & Schedules",
     href: "/curriculum",
     icon: "M4 5a2 2 0 012-2h12v16H6a2 2 0 00-2 2V5zM4 19a2 2 0 012-2h12",
-  },
-  {
-    label: "User Roles",
-    href: "/roles",
-    icon: "M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6l8-3z",
-  },
-  {
-    label: "Audit Logs",
-    href: "/logs",
-    icon: "M9 5h6M9 9h6M9 13h4M7 3h10a2 2 0 012 2v14a2 2 0 01-2 2H7a2 2 0 01-2-2V5a2 2 0 012-2z",
   },
 ];
 
@@ -59,6 +55,7 @@ export default function AdminNavbar() {
   const [adminName, setAdminName] = useState("System Admin");
   const [collapsed, setCollapsed] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [pendingAdmissions, setPendingAdmissions] = useState(0);
 
   useEffect(() => {
     const storedName = localStorage.getItem("mock_user_name");
@@ -66,6 +63,16 @@ export default function AdminNavbar() {
       setAdminName(storedName);
     }
     setCollapsed(localStorage.getItem(COLLAPSE_KEY) === "true");
+  }, []);
+
+  // Live count of applications waiting for review
+  useEffect(() => {
+    const unsub = onSnapshot(
+      query(collection(db, "applications"), where("status", "==", "pending")),
+      (snap) => setPendingAdmissions(snap.size),
+      () => setPendingAdmissions(0)
+    );
+    return () => unsub();
   }, []);
 
   // Automatically close the mobile drawer when navigating to a new route
@@ -126,7 +133,7 @@ export default function AdminNavbar() {
                 PATHWAYS
               </span>
               <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-700">
-                DLSAU Portal
+                Admin Portal
               </span>
             </div>
           </Link>
@@ -197,11 +204,13 @@ export default function AdminNavbar() {
             {ADMIN_LINKS.map((item) => {
               const isActive =
                 pathname === item.href || pathname.startsWith(`${item.href}/`);
+              const showBadge = item.href === "/applications" && pendingAdmissions > 0;
               return (
                 <Link
                   key={item.href}
                   href={item.href}
                   title={collapsed ? item.label : undefined}
+                  aria-current={isActive ? "page" : undefined}
                   className={`relative flex shrink-0 items-center gap-3 px-3.5 py-2.5 text-sm font-semibold transition-all ${
                     collapsed ? "md:justify-center md:px-0" : ""
                   } ${
@@ -217,6 +226,20 @@ export default function AdminNavbar() {
                   <span className={collapsed ? "md:hidden" : ""}>
                     {item.label}
                   </span>
+                  {showBadge && (
+                    <span
+                      aria-label={`${pendingAdmissions} pending admissions`}
+                      className={`ml-auto min-w-5 px-1.5 py-0.5 text-center font-mono text-[11px] font-bold ${
+                        isActive ? "bg-white text-emerald-950" : "bg-amber-500 text-white"
+                      } ${
+                        collapsed
+                          ? "md:absolute md:right-1 md:top-1 md:ml-0 md:min-w-4 md:px-1 md:py-0 md:text-[10px]"
+                          : ""
+                      }`}
+                    >
+                      {pendingAdmissions > 99 ? "99+" : pendingAdmissions}
+                    </span>
+                  )}
                 </Link>
               );
             })}
@@ -233,7 +256,7 @@ export default function AdminNavbar() {
                 {adminName}
               </p>
               <p className="text-xs font-medium text-emerald-800">
-                DLSAU Administrator
+                System Administrator
               </p>
             </div>
             <button

@@ -121,18 +121,27 @@ export default function ApplicationsPage() {
             programId: raw.programId || "bs-computer-science",
             consent: true,
           };
+  const rawStatus = String(raw.status || "pending").trim().toLowerCase();
+          const validStatus: ApplicationStatus =
+            rawStatus === "needs_info" || rawStatus === "approved" || rawStatus === "rejected"
+              ? (rawStatus as ApplicationStatus)
+              : "pending";
+
+          const rawType = String(raw.type || "freshman").trim().toLowerCase();
+          const validType = rawType === "transferee" ? "transferee" : "freshman";
+
           return {
             id: d.id,
             reference: raw.reference || d.id,
-            status: (raw.status as ApplicationStatus) || "pending",
-            type: raw.type || "freshman",
+            status: validStatus,
+            type: validType,
             applicant,
             documents: raw.documents || {},
             reviewNote: raw.reviewNote || "",
             reviewedBy: raw.reviewedBy,
             reviewedAt: raw.reviewedAt ?? null,
             studentNumber: raw.studentNumber,
-            createdAt: raw.createdAt ?? null,
+            createdAt: raw.createdAt ?? raw.submittedAtIso ?? null,
             updatedAt: raw.updatedAt ?? null,
           };
         });
@@ -194,9 +203,16 @@ export default function ApplicationsPage() {
         )
       );
     }
-    // Work the queue oldest-first so nobody waits forever
+  // Work the queue oldest-first so nobody waits forever (safe against NaN)
     if (filter === "pending" || filter === "needs_info") {
-      list = [...list].sort((x, y) => (x.createdAt?.seconds ?? Infinity) - (y.createdAt?.seconds ?? Infinity));
+      const toMs = (t: any) => {
+        if (!t) return Number.MAX_SAFE_INTEGER;
+        if (typeof t?.toMillis === "function") return t.toMillis();
+        if (typeof t?.seconds === "number") return t.seconds * 1000;
+        const parsed = Date.parse(String(t));
+        return Number.isFinite(parsed) ? parsed : Number.MAX_SAFE_INTEGER;
+      };
+      list = [...list].sort((x, y) => toMs(x.createdAt) - toMs(y.createdAt));
     }
     return list;
   }, [apps, filter, search]);

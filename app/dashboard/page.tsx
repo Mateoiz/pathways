@@ -1,41 +1,25 @@
 "use client";
 
+// app/dashboard/page.tsx
+
 import { useEffect, useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
-import { collection, doc, getDoc, getDocs, query, where } from "firebase/firestore";
+import { collection, doc, getDoc, getDocs, query, setDoc, where, writeBatch } from "firebase/firestore";
 import { auth, db } from "@/lib/firebase";
 import AdminNavbar from "@/components/AdminNavbar";
 import Navbar from "@/components/Navbar";
 import StudentProfile from "@/components/Studentprofile";
-import {
-  AcademicConfig,
-  DEFAULT_ACADEMIC_CONFIG,
-  getAcademicConfig,
-} from "@/lib/academicConfig";
+import { AcademicConfig, DEFAULT_ACADEMIC_CONFIG, getAcademicConfig } from "@/lib/academicConfig";
+
+/* ───────── constants & types ───────── */
 
 const REGISTRAR_LINKS = [
-  {
-    label: "Dashboard",
-    href: "/dashboard",
-    icon: "M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6",
-  },
-  {
-    label: "Sections",
-    href: "/sections",
-    icon: "M4 6h16M4 10h16M4 14h16M4 18h16",
-  },
-  {
-    label: "Override Requests",
-    href: "/overrides",
-    icon: "M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z",
-  },
-  {
-    label: "Enrollment Reports",
-    href: "/reports",
-    icon: "M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z",
-  },
+  { label: "Dashboard", href: "/dashboard" },
+  { label: "Sections", href: "/sections" },
+  { label: "Override requests", href: "/overrides" },
+  { label: "Enrollment reports", href: "/reports" },
 ];
 
 const CLEARANCE_GATES = [
@@ -59,354 +43,210 @@ export interface ClearanceItem {
   status: ClearanceStatus;
 }
 
-type StepState = "done" | "current" | "blocked" | "closed" | "locked";
+type Tone = "ok" | "warn" | "alert" | "info";
 
-interface Step {
-  id: string;
+interface NextAction {
+  tone: Tone;
   title: string;
-  state: StepState;
-  summary: string;
-  body?: React.ReactNode;
+  body: string;
+  cta?: { label: string; href: string };
+  secondary?: { label: string; href: string };
 }
 
-const CheckIcon = () => (
-  <svg viewBox="0 0 20 20" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.5" aria-hidden="true">
-    <path d="M4 10.5l4 4 8-9" />
-  </svg>
-);
-const LockIcon = () => (
-  <svg viewBox="0 0 20 20" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-    <rect x="4.5" y="9" width="11" height="8" />
-    <path d="M7 9V6.5a3 3 0 016 0V9" />
-  </svg>
-);
-const AlertIcon = () => (
-  <svg viewBox="0 0 20 20" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.5" aria-hidden="true">
-    <path d="M10 4v7M10 14.5v.5" />
-  </svg>
-);
-
-const MARKER: Record<StepState, string> = {
-  done: "bg-emerald-800 text-white border-emerald-800",
-  current: "bg-white text-emerald-900 border-emerald-800 ring-4 ring-emerald-100",
-  blocked: "bg-red-600 text-white border-red-600",
-  closed: "bg-zinc-100 text-zinc-600 border-zinc-400",
-  locked: "bg-zinc-100 text-zinc-400 border-zinc-300",
+const TONE_BORDER: Record<Tone, string> = {
+  ok: "border-l-emerald-700",
+  warn: "border-l-amber-500",
+  alert: "border-l-red-600",
+  info: "border-l-sky-600",
 };
 
-const STATE_LABEL: Record<StepState, string> = {
-  done: "Completed",
-  current: "Current Step",
-  blocked: "Hold / Action Needed",
-  closed: "Enrollment Closed",
-  locked: "Locked",
-};
+const primaryBtn =
+  "inline-flex items-center bg-emerald-900 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800";
+const secondaryBtn =
+  "inline-flex items-center border border-emerald-900/20 bg-white px-4 py-2 text-sm font-semibold text-emerald-950 hover:bg-emerald-50";
 
-const STATE_LABEL_STYLE: Record<StepState, string> = {
-  done: "text-emerald-800 bg-emerald-50 border-emerald-200",
-  current: "text-emerald-900 bg-emerald-100/80 border-emerald-300",
-  blocked: "text-red-800 bg-red-50 border-red-300",
-  closed: "text-zinc-600 bg-zinc-100 border-zinc-300",
-  locked: "text-zinc-400 bg-zinc-50 border-zinc-200",
-};
+/* ───────── small components ───────── */
 
-function StatusBadge({ status }: { status: ClearanceStatus }) {
-  const styles: Record<ClearanceStatus, string> = {
-    cleared: "border-emerald-300 bg-emerald-50 text-emerald-900",
-    pending: "border-amber-300 bg-amber-50 text-amber-900",
-    blocked: "border-red-300 bg-red-50 text-red-900",
-  };
-  const dots: Record<ClearanceStatus, string> = {
-    cleared: "bg-emerald-700",
-    pending: "bg-amber-600",
-    blocked: "bg-red-600",
-  };
-  const labels: Record<ClearanceStatus, string> = {
-    cleared: "Cleared",
-    pending: "Pending",
-    blocked: "On Hold",
-  };
+function Card({ title, right, children }: { title: string; right?: React.ReactNode; children: React.ReactNode }) {
   return (
-    <span
-      className={`inline-flex items-center gap-1.5 border px-2 py-0.5 text-[11px] font-bold uppercase tracking-wider ${styles[status]}`}
-    >
-      <span className={`h-1.5 w-1.5 ${dots[status]}`} />
-      {labels[status]}
-    </span>
+    <section className="border border-emerald-900/15 bg-white">
+      <div className="flex items-center justify-between gap-2 border-b border-zinc-200 px-5 py-3">
+        <h2 className="text-sm font-bold text-emerald-950">{title}</h2>
+        {right}
+      </div>
+      {children}
+    </section>
   );
 }
 
-function SectionHeader({
-  title,
-  subtitle,
-  rightContent,
-}: {
-  title: string;
-  subtitle?: string;
-  rightContent?: React.ReactNode;
-}) {
+function NextActionCard({ action }: { action: NextAction }) {
+  const linkFor = (l: { label: string; href: string }, cls: string) =>
+    l.href.startsWith("#") ? (
+      <a href={l.href} className={cls}>
+        {l.label}
+      </a>
+    ) : (
+      <Link href={l.href} className={cls}>
+        {l.label}
+      </Link>
+    );
+
   return (
-    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-200 bg-zinc-50/70 px-5 py-3.5">
-      <div className="flex items-center gap-2.5">
-        <div className="h-4 w-1.5 bg-emerald-800" />
-        <div>
-          <h2 className="text-xs font-bold uppercase tracking-wider text-emerald-950">
-            {title}
-          </h2>
-          {subtitle && <p className="text-[11px] text-zinc-500">{subtitle}</p>}
-        </div>
+    <section
+      aria-label="Your next step"
+      className={`flex flex-col gap-4 border border-emerald-900/15 border-l-4 bg-white px-6 py-5 sm:flex-row sm:items-center sm:justify-between ${TONE_BORDER[action.tone]}`}
+    >
+      <div className="min-w-0">
+        <h2 className="text-lg font-bold text-zinc-900">{action.title}</h2>
+        <p className="mt-1 max-w-xl text-sm text-zinc-600">{action.body}</p>
       </div>
-      {rightContent}
+      <div className="flex shrink-0 flex-wrap gap-2">
+        {action.cta && linkFor(action.cta, primaryBtn)}
+        {action.secondary && linkFor(action.secondary, secondaryBtn)}
+      </div>
+    </section>
+  );
+}
+
+/** Compact 3-step tracker: Clearances → Courses → Confirmation */
+function ProgressTracker({ steps }: { steps: { label: string; done: boolean }[] }) {
+  const current = steps.findIndex((s) => !s.done);
+  return (
+    <ol className="flex items-center border border-emerald-900/15 bg-white px-5 py-4" aria-label="Enrollment progress">
+      {steps.map((s, i) => {
+        const isCurrent = i === current;
+        return (
+          <li key={s.label} className="flex flex-1 items-center last:flex-none" aria-current={isCurrent ? "step" : undefined}>
+            <span
+              className={`flex h-7 w-7 shrink-0 items-center justify-center border-2 text-xs font-bold ${
+                s.done
+                  ? "border-emerald-800 bg-emerald-800 text-white"
+                  : isCurrent
+                    ? "border-emerald-800 bg-white text-emerald-900"
+                    : "border-zinc-300 bg-white text-zinc-400"
+              }`}
+            >
+              {s.done ? "✓" : i + 1}
+            </span>
+            <span
+              className={`ml-2 text-xs font-semibold sm:text-sm ${
+                s.done || isCurrent ? "text-zinc-900" : "text-zinc-400"
+              }`}
+            >
+              {s.label}
+            </span>
+            {i < steps.length - 1 && <span className={`mx-3 h-0.5 flex-1 ${s.done ? "bg-emerald-700" : "bg-zinc-200"}`} />}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+/** Only shows offices that still need attention. */
+function ClearanceList({ items }: { items: ClearanceItem[] }) {
+  const outstanding = items
+    .filter((c) => c.status !== "cleared")
+    .sort((a, b) => (a.status === "blocked" ? 0 : 1) - (b.status === "blocked" ? 0 : 1));
+
+  return (
+    <div id="clearances" className="scroll-mt-6">
+      <Card title="Clearances needed" right={<span className="text-xs text-zinc-500">{outstanding.length} of {items.length} outstanding</span>}>
+        <ul className="divide-y divide-zinc-200">
+          {outstanding.map((c) => (
+            <li key={c.key} className="flex items-center justify-between gap-3 px-5 py-3">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold text-zinc-900">{c.label}</p>
+                <p className="truncate text-xs text-zinc-500">{c.office}</p>
+              </div>
+              <span
+                className={`shrink-0 border px-2 py-0.5 text-xs font-semibold ${
+                  c.status === "blocked"
+                    ? "border-red-300 bg-red-50 text-red-800"
+                    : "border-amber-300 bg-amber-50 text-amber-900"
+                }`}
+              >
+                {c.status === "blocked" ? "On hold" : "Pending"}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </Card>
     </div>
   );
 }
 
-function EnrollmentStepper({
-  enrollmentOpen,
-  clearances,
-  subjectCount,
-  totalUnits,
-  maxUnits,
-  isConfirmed,
+/* ───────── registrar sidebar ───────── */
+
+function RegistrarSidebar({
+  pathname,
+  name,
+  onLogout,
 }: {
-  enrollmentOpen: boolean;
-  clearances: ClearanceItem[];
-  subjectCount: number;
-  totalUnits: number;
-  maxUnits: number;
-  isConfirmed: boolean;
+  pathname: string | null;
+  name: string | null;
+  onLogout: () => void;
 }) {
-  const cleared = clearances.filter((c) => c.status === "cleared");
-  const blocked = clearances.filter((c) => c.status === "blocked");
-  const allCleared = cleared.length === clearances.length;
-  const hasSubjects = subjectCount > 0;
-
-  const doneFlags = [true, allCleared, hasSubjects, isConfirmed];
-  const currentIndex = doneFlags.findIndex((d) => !d);
-
-  function stateFor(index: number): StepState {
-    if (doneFlags[index]) return "done";
-    if (index !== currentIndex) return "locked";
-    if (index === 1 && blocked.length > 0) return "blocked";
-    if (index >= 2 && !enrollmentOpen) return "closed";
-    return "current";
-  }
-
-  const steps: Step[] = [
-    {
-      id: "profile",
-      title: "1. Verify Student Profile & Academic Standing",
-      state: stateFor(0),
-      summary: "Signed in and active. Program, curriculum code, and term eligibility verified.",
-    },
-    {
-      id: "clearance",
-      title: "2. Settle Institutional & Department Clearances",
-      state: stateFor(1),
-      summary: allCleared
-        ? `All ${clearances.length} university offices cleared for enrollment`
-        : `${cleared.length} of ${clearances.length} offices cleared`,
-      body: (
-        <div>
-          <p className="text-sm text-zinc-700">
-            {blocked.length > 0
-              ? `${blocked.length} office${
-                  blocked.length > 1 ? "s have" : " has"
-                } placed an accountability hold on your record. Coordinate with the concerned office to lift the hold.`
-              : `You have ${clearances.length - cleared.length} pending office clearance${
-                  clearances.length - cleared.length === 1 ? "" : "s"
-                }. Subject enlistment unlocks automatically once all offices mark your record Cleared.`}
-          </p>
-          <ul className="mt-3.5 grid grid-cols-1 gap-2 sm:grid-cols-2">
-            {clearances.map((c) => (
-              <li
-                key={c.key}
-                className={`flex items-center justify-between gap-3 border border-l-4 px-3 py-2 text-xs ${
-                  c.status === "cleared"
-                    ? "border-zinc-200 border-l-emerald-700 bg-white text-zinc-700"
-                    : c.status === "blocked"
-                      ? "border-red-200 border-l-red-600 bg-red-50/70 font-semibold text-red-900"
-                      : "border-amber-200 border-l-amber-500 bg-amber-50/50 text-amber-900"
-                }`}
-              >
-                <span className="font-semibold truncate">{c.label}</span>
-                <span className="font-mono text-[11px] font-bold uppercase shrink-0">
-                  {c.status === "cleared" ? "Cleared" : c.status === "blocked" ? "Hold" : "Pending"}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      ),
-    },
-    {
-      id: "subjects",
-      title: "3. Course Enlistment & Section Selection",
-      state: stateFor(2),
-      summary: hasSubjects
-        ? `${subjectCount} course${subjectCount === 1 ? "" : "s"} enlisted (${totalUnits} of ${maxUnits} max units)`
-        : "Unlocks automatically once all 8 department clearances are satisfied.",
-      body: (
-        <div>
-          <p className="text-sm text-zinc-700">
-            Select your courses and sections from the Trimester Offerings Catalog. Your maximum allowable load for this term is{" "}
-            <strong className="font-mono text-emerald-950">{maxUnits} units</strong>.
-          </p>
-          <Link
-            href="/catalog"
-            className="mt-3.5 inline-flex items-center gap-2 border-l-4 border-emerald-400 bg-emerald-900 px-4 py-2 text-xs font-bold uppercase tracking-wider text-white hover:bg-emerald-800"
-          >
-            Open Subject Catalog →
-          </Link>
-        </div>
-      ),
-    },
-    {
-      id: "confirm",
-      title: "4. Schedule Confirmation & EAF Generation",
-      state: stateFor(3),
-      summary: isConfirmed
-        ? "Officially enrolled. Your Enrollment Assessment Form (EAF) and timetable are active."
-        : "Unlocks after adding at least one course to your study load.",
-      body: (
-        <div>
-          <p className="text-sm text-zinc-700">
-            Review your <strong className="font-mono">{subjectCount}</strong> enlisted course
-            {subjectCount === 1 ? "" : "s"} (<strong className="font-mono">{totalUnits} units</strong>) and finalize your confirmation to lock in your slots.
-          </p>
-          <div className="mt-3.5 flex flex-wrap gap-2.5">
-            <Link
-              href="/catalog"
-              className="inline-flex items-center gap-2 border-l-4 border-emerald-400 bg-emerald-900 px-4 py-2 text-xs font-bold uppercase tracking-wider text-white hover:bg-emerald-800"
-            >
-              Review &amp; Confirm Load →
-            </Link>
-            <Link
-              href="/schedule"
-              className="inline-flex items-center gap-2 border border-emerald-900/20 bg-white px-4 py-2 text-xs font-bold uppercase tracking-wider text-emerald-950 hover:bg-emerald-50"
-            >
-              Preview Timetable
-            </Link>
-          </div>
-        </div>
-      ),
-    },
-  ];
+  const [open, setOpen] = useState(false);
 
   return (
-    <section aria-label="Enrollment progress" className="border border-emerald-900/15 bg-white shadow-xs">
-      <SectionHeader
-        title="Online Enrollment Workflow"
-        subtitle="Complete each requirement in sequence to finalize your trimester load"
-        rightContent={
-          <span className="border border-emerald-900/15 bg-white px-2.5 py-1 font-mono text-xs font-bold text-emerald-950">
-            {currentIndex === -1 ? "4 / 4 COMPLETE" : `STEP ${currentIndex + 1} OF ${steps.length}`}
-          </span>
-        }
-      />
-
-      {!enrollmentOpen && !isConfirmed && (
-        <div
-          role="status"
-          className="flex items-center gap-2.5 border-b border-amber-200 bg-amber-50/70 px-5 py-3 text-xs font-medium text-amber-950"
-        >
-          <span className="h-2 w-2 shrink-0 bg-amber-600" />
-          Online enlistment is currently closed. You may still monitor your department clearances and academic records.
+    <aside className="sticky top-0 z-40 w-full shrink-0 border-b border-emerald-900/15 bg-white md:h-dvh md:w-56 md:border-b-0 md:border-r">
+      <div className="flex h-full flex-col px-4 py-3 md:p-5">
+        <div className="flex items-center justify-between md:mb-6">
+          <Link href="/dashboard" className="flex items-center gap-2.5">
+            <Image src="/logo/dlsau.png" alt="DLSAU logo" width={36} height={36} className="h-9 w-9 object-contain" priority />
+            <div>
+              <span className="block font-bold leading-none text-emerald-950">PATHWAYS</span>
+              <span className="text-xs text-emerald-700">Registrar</span>
+            </div>
+          </Link>
+          <button
+            type="button"
+            onClick={() => setOpen((p) => !p)}
+            aria-label={open ? "Close menu" : "Open menu"}
+            aria-expanded={open}
+            className="flex h-9 w-9 items-center justify-center border border-emerald-900/20 text-emerald-950 md:hidden"
+          >
+            <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+              <path d={open ? "M6 18L18 6M6 6l12 12" : "M4 6h16M4 12h16M4 18h16"} />
+            </svg>
+          </button>
         </div>
-      )}
 
-      <ol className="p-5 sm:p-6">
-        {steps.map((step, i) => {
-          const isLast = i === steps.length - 1;
-          const expanded = step.state === "current" || step.state === "blocked";
-          return (
-            <li
-              key={step.id}
-              className="relative flex gap-4"
-              aria-current={expanded ? "step" : undefined}
-            >
-              {!isLast && (
-                <span
-                  aria-hidden="true"
-                  className={`absolute left-[15px] top-8 bottom-0 w-0.5 ${
-                    step.state === "done" ? "bg-emerald-700" : "bg-zinc-200"
+        <div className={`${open ? "flex" : "hidden"} mt-3 flex-1 flex-col justify-between md:mt-0 md:flex`}>
+          <nav className="flex flex-col gap-1">
+            {REGISTRAR_LINKS.map((item) => {
+              const active = pathname === item.href || (pathname ?? "").startsWith(`${item.href}/`);
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={`px-3 py-2 text-sm font-semibold ${
+                    active ? "bg-emerald-900 text-white" : "text-zinc-600 hover:bg-emerald-50 hover:text-emerald-950"
                   }`}
-                />
-              )}
+                >
+                  {item.label}
+                </Link>
+              );
+            })}
+          </nav>
 
-              <span
-                className={`relative z-10 flex h-8 w-8 shrink-0 items-center justify-center border-2 text-xs font-bold ${MARKER[step.state]}`}
-              >
-                {step.state === "done" ? (
-                  <CheckIcon />
-                ) : step.state === "locked" || step.state === "closed" ? (
-                  <LockIcon />
-                ) : step.state === "blocked" ? (
-                  <AlertIcon />
-                ) : (
-                  i + 1
-                )}
-              </span>
-
-              <div className={`min-w-0 flex-1 ${isLast ? "" : "pb-6"}`}>
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <h3
-                    className={`text-sm font-bold ${
-                      step.state === "locked" ? "text-zinc-400" : "text-zinc-900"
-                    }`}
-                  >
-                    {step.title}
-                  </h3>
-                  <span
-                    className={`border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${STATE_LABEL_STYLE[step.state]}`}
-                  >
-                    {STATE_LABEL[step.state]}
-                  </span>
-                </div>
-
-                {expanded ? (
-                  <div className="mt-3 border border-emerald-900/15 border-l-4 border-l-emerald-700 bg-[#F8FAF9] p-4">
-                    {step.body}
-                  </div>
-                ) : (
-                  <p
-                    className={`mt-1 text-xs leading-relaxed ${
-                      step.state === "locked" ? "text-zinc-400" : "text-zinc-600"
-                    }`}
-                  >
-                    {step.summary}
-                    {step.id === "subjects" && step.state === "done" && !isConfirmed && (
-                      <>
-                        {" · "}
-                        <Link
-                          href="/catalog"
-                          className="font-bold text-emerald-800 underline underline-offset-2 hover:text-emerald-950"
-                        >
-                          Modify Enlistment
-                        </Link>
-                      </>
-                    )}
-                    {step.id === "confirm" && step.state === "done" && (
-                      <>
-                        {" · "}
-                        <Link
-                          href="/schedule"
-                          className="font-bold text-emerald-800 underline underline-offset-2 hover:text-emerald-950"
-                        >
-                          View Official Schedule
-                        </Link>
-                      </>
-                    )}
-                  </p>
-                )}
-              </div>
-            </li>
-          );
-        })}
-      </ol>
-    </section>
+          <div className="mt-4 border-t border-emerald-900/10 pt-4">
+            <p className="truncate text-sm font-semibold text-zinc-900">{name}</p>
+            <button
+              onClick={onLogout}
+              className="mt-2 w-full border border-emerald-900/20 px-3 py-2 text-sm font-semibold text-emerald-950 hover:bg-emerald-900 hover:text-white"
+            >
+              Sign out
+            </button>
+          </div>
+        </div>
+      </div>
+    </aside>
   );
 }
+
+/* ───────── page ───────── */
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -416,34 +256,38 @@ export default function DashboardPage() {
   const [name, setName] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const [showProfile, setShowProfile] = useState(false);
-  const [regCollapsed, setRegCollapsed] = useState(false);
-  const [regMobileOpen, setRegMobileOpen] = useState(false);
 
-  // Live database states
-  const [academicConfig, setAcademicConfig] = useState<AcademicConfig>(
-    DEFAULT_ACADEMIC_CONFIG
-  );
+  const [academicConfig, setAcademicConfig] = useState<AcademicConfig>(DEFAULT_ACADEMIC_CONFIG);
   const [studentDoc, setStudentDoc] = useState<any | null>(null);
   const [enlistments, setEnlistments] = useState<any[]>([]);
   const [isLoadingData, setIsLoadingData] = useState(true);
 
+  // Registrar queue
+  const [regRecords, setRegRecords] = useState<any[]>([]);
+  const [regFilter, setRegFilter] = useState<"All" | "Enlisted" | "Enrolled">("Enlisted");
+  const [regSearch, setRegSearch] = useState("");
+  const [processingStudentId, setProcessingStudentId] = useState<string | null>(null);
+  const [regToast, setRegToast] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  function showRegToast(type: "success" | "error", text: string) {
+    setRegToast({ type, text });
+    setTimeout(() => setRegToast(null), 4000);
+  }
+
   useEffect(() => {
     const storedRole = localStorage.getItem("mock_user_role") as Role | null;
-    const storedName = localStorage.getItem("mock_user_name");
-    const storedId = localStorage.getItem("mock_user_id");
-
     if (!storedRole || storedRole === ("undefined" as any)) {
       localStorage.clear();
       router.push("/");
     } else {
       setRole(storedRole);
-      setName(storedName);
-      setUserId(storedId);
+      setName(localStorage.getItem("mock_user_name"));
+      setUserId(localStorage.getItem("mock_user_id"));
     }
   }, [router]);
 
   useEffect(() => {
-    async function loadStudentOverview() {
+    async function load() {
       if (!role) return;
       try {
         const config = await getAcademicConfig();
@@ -452,20 +296,53 @@ export default function DashboardPage() {
         if (role === "student" && userId) {
           const [stSnap, enlSnap] = await Promise.all([
             getDoc(doc(db, "students", userId)),
-            getDocs(
-              query(collection(db, "enlistments"), where("userId", "==", userId))
-            ),
+            getDocs(query(collection(db, "enlistments"), where("userId", "==", userId))),
+          ]);
+          if (stSnap.exists()) setStudentDoc(stSnap.data());
+
+          const byCode = new Map<string, any>();
+          enlSnap.docs.forEach((d) => byCode.set(d.data().code, d.data()));
+          setEnlistments(Array.from(byCode.values()));
+        } else if (role === "registrar" || role === "admin") {
+          const [studentsSnap, allEnlSnap] = await Promise.all([
+            getDocs(collection(db, "students")),
+            getDocs(collection(db, "enlistments")),
           ]);
 
-          if (stSnap.exists()) {
-            setStudentDoc(stSnap.data());
-          }
-          const byCode = new Map<string, any>();
-          enlSnap.docs.forEach((d) => {
+          const enlByUser = new Map<string, any[]>();
+          allEnlSnap.docs.forEach((d) => {
             const data = d.data();
-            byCode.set(data.code, data);
+            const dTerm = data.enrolledTerm || data.term || "1st Trimester";
+            if (dTerm === config.currentTerm && data.userId) {
+              const list = enlByUser.get(data.userId) || [];
+              if (!list.some((item) => item.code === data.code)) {
+                list.push({ docId: d.id, ...data });
+                enlByUser.set(data.userId, list);
+              }
+            }
           });
-          setEnlistments(Array.from(byCode.values()));
+
+          const rows: any[] = [];
+          studentsSnap.docs.forEach((sDoc) => {
+            const s = sDoc.data();
+            const sid = s.studentId || sDoc.id;
+            const userEnl = enlByUser.get(sid) || [];
+            if (userEnl.length === 0) return;
+
+            rows.push({
+              studentId: sid,
+              name: `${s.lastName || s.personal?.lastName || ""}, ${s.firstName || s.personal?.firstName || ""}`.trim(),
+              program: s.program || s.academic?.program || "—",
+              section: s.section || s.academic?.section || "—",
+              courses: userEnl,
+              units: userEnl.reduce((sum, item) => sum + (Number(item.units) || 0), 0),
+              eafStatus: userEnl.every((item) => item.status === "Enrolled") ? "Enrolled" : "Enlisted",
+              eafPayment: s.eafPayment || null,
+            });
+          });
+
+          rows.sort((a, b) => a.studentId.localeCompare(b.studentId));
+          setRegRecords(rows);
         }
       } catch (error) {
         console.error("Failed to load dashboard overview:", error);
@@ -473,8 +350,60 @@ export default function DashboardPage() {
         setIsLoadingData(false);
       }
     }
-    loadStudentOverview();
+    load();
   }, [role, userId]);
+
+  async function handleSetEAFStatus(targetStudentId: string, nextStatus: "Enrolled" | "Enlisted") {
+    setProcessingStudentId(targetStudentId);
+    try {
+      const now = new Date().toISOString();
+      const snap = await getDocs(query(collection(db, "enlistments"), where("userId", "==", targetStudentId)));
+
+      const batch = writeBatch(db);
+      snap.docs.forEach((d) => {
+        const dTerm = d.data().enrolledTerm || d.data().term || "1st Trimester";
+        if (dTerm === academicConfig.currentTerm) {
+          batch.update(d.ref, {
+            status: nextStatus,
+            updatedAt: now,
+            ...(nextStatus === "Enrolled" ? { confirmedAt: now, confirmedBy: name || "Registrar" } : {}),
+          });
+        }
+      });
+      await batch.commit();
+
+      const targetRow = regRecords.find((r) => r.studentId === targetStudentId);
+      const updatedPayment = {
+        ...(targetRow?.eafPayment || {}),
+        settled: nextStatus === "Enrolled",
+        status: nextStatus === "Enrolled" ? "verified" : "for_verification",
+        term: academicConfig.currentTerm,
+        schoolYear: academicConfig.schoolYear,
+        verifiedBy: name || "Registrar",
+        verifiedAt: now,
+      };
+      await setDoc(doc(db, "students", targetStudentId), { eafPayment: updatedPayment, updatedAt: now }, { merge: true });
+
+      setRegRecords((prev) =>
+        prev.map((r) =>
+          r.studentId === targetStudentId
+            ? {
+                ...r,
+                eafStatus: nextStatus,
+                eafPayment: updatedPayment,
+                courses: r.courses.map((c: any) => ({ ...c, status: nextStatus })),
+              }
+            : r,
+        ),
+      );
+      showRegToast("success", `${targetStudentId} is now ${nextStatus.toLowerCase()}.`);
+    } catch (error) {
+      console.error("Failed to update EAF status:", error);
+      showRegToast("error", "Couldn't update the EAF status. Please try again.");
+    } finally {
+      setProcessingStudentId(null);
+    }
+  }
 
   function handleLogout() {
     localStorage.removeItem("mock_user_role");
@@ -486,694 +415,376 @@ export default function DashboardPage() {
 
   if (!role || isLoadingData)
     return (
-      <div className="flex min-h-dvh items-center justify-center bg-white">
-        <div className="flex items-center gap-3 text-emerald-900 text-sm font-semibold">
-          <div className="h-5 w-1.5 bg-emerald-700 animate-pulse" />
-          <svg
-            className="animate-spin h-5 w-5 text-emerald-700"
-            xmlns="http://www.w3.org/2000/svg"
-            fill="none"
-            viewBox="0 0 24 24"
-          >
-            <circle
-              className="opacity-25"
-              cx="12"
-              cy="12"
-              r="10"
-              stroke="currentColor"
-              strokeWidth="4"
-            />
-            <path
-              className="opacity-75"
-              fill="currentColor"
-              d="M4 12a8 8 0 018-8v8z"
-            />
-          </svg>
-          Loading portal records...
-        </div>
+      <div className="flex min-h-dvh items-center justify-center bg-white text-sm font-semibold text-emerald-900">
+        Loading your records...
       </div>
     );
 
-  // Compute live clearance & enrollment progress for students (supports cleared, pending, blocked)
+  /* ───────── derived: student ───────── */
+
   const clearancesMap = studentDoc?.clearances || {};
   const clearanceList: ClearanceItem[] = CLEARANCE_GATES.map((g) => {
     const raw = String(clearancesMap[g.key] || "pending").toLowerCase();
     const status: ClearanceStatus =
       raw === "cleared" ? "cleared" : raw === "blocked" || raw === "hold" ? "blocked" : "pending";
-    return {
-      ...g,
-      status,
-    };
+    return { ...g, status };
   });
 
-  const allCleared = clearanceList.every((c) => c.status === "cleared");
+  const outstandingCount = clearanceList.filter((c) => c.status !== "cleared").length;
   const blockedCount = clearanceList.filter((c) => c.status === "blocked").length;
-  const pendingCount = clearanceList.filter((c) => c.status !== "cleared").length;
+  const allCleared = outstandingCount === 0;
 
-  const maxUnits =
-    studentDoc?.maxUnits ??
-    studentDoc?.academic?.maxUnits ??
-    academicConfig.maxUnitsDefault;
+  const maxUnits = studentDoc?.maxUnits ?? studentDoc?.academic?.maxUnits ?? academicConfig.maxUnitsDefault;
   const totalUnits = enlistments.reduce((sum, s) => sum + (s.units || 0), 0);
-  const hasAddedSubjects = enlistments.length > 0;
-  const isConfirmed =
-    enlistments.length > 0 &&
-    enlistments.every((s) => s.status === "Enrolled" || s.source === "block");
+  const hasCourses = enlistments.length > 0;
+  const isConfirmed = hasCourses && enlistments.every((s) => s.status === "Enrolled" || s.source === "block");
+  const overloaded = totalUnits > maxUnits;
 
-  const programCode =
-    studentDoc?.program || studentDoc?.academic?.program || "BSCS";
-  const yearLevel =
-    studentDoc?.yearLevel || studentDoc?.academic?.yearLevel || "1st Year";
-  const sectionCode =
-    studentDoc?.academic?.section || studentDoc?.section || "Unassigned";
-  const studentStanding =
-    studentDoc?.enrollmentStatus || studentDoc?.academic?.standing || "Regular";
+  const programCode = studentDoc?.program || studentDoc?.academic?.program || "BSCS";
+  const yearLevel = studentDoc?.yearLevel || studentDoc?.academic?.yearLevel || "1st Year";
+  const sectionCode = studentDoc?.academic?.section || studentDoc?.section || "Unassigned";
+
+  function getNextAction(): NextAction {
+    if (blockedCount > 0)
+      return {
+        tone: "alert",
+        title: `Clear ${blockedCount} hold${blockedCount > 1 ? "s" : ""} on your record`,
+        body: "Holds block enlistment. Visit the office concerned and your status will update here.",
+        cta: { label: "See holds", href: "#clearances" },
+      };
+    if (!allCleared)
+      return {
+        tone: "warn",
+        title: `Waiting on ${outstandingCount} office${outstandingCount > 1 ? "s" : ""}`,
+        body: "Enlistment opens once every office clears your record. Nothing else is needed from you.",
+        cta: { label: "See offices", href: "#clearances" },
+      };
+    if (isConfirmed)
+      return {
+        tone: "ok",
+        title: "You're officially enrolled",
+        body: `Your ${academicConfig.currentTerm} load is registered.`,
+        cta: { label: "View EAF", href: "/eaf" },
+        secondary: { label: "View timetable", href: "/schedule" },
+      };
+    if (hasCourses)
+      return {
+        tone: "info",
+        title: "Pay and confirm your EAF",
+        body: "Your slots are only guaranteed after the Registrar confirms your EAF.",
+        cta: { label: "Open EAF", href: "/eaf" },
+        secondary: { label: "Change courses", href: "/catalog" },
+      };
+    if (!academicConfig.enrollmentOpen)
+      return {
+        tone: "warn",
+        title: "Enlistment is closed",
+        body: "You're cleared. You can browse the catalog until enlistment opens.",
+        cta: { label: "Browse catalog", href: "/catalog" },
+      };
+    return {
+      tone: "ok",
+      title: "Enlist your courses",
+      body: `You're cleared for ${academicConfig.currentTerm}. Pick courses up to ${maxUnits} units.`,
+      cta: { label: "Open catalog", href: "/catalog" },
+    };
+  }
+
+  /* ───────── derived: registrar ───────── */
+
+  const hasRef = (r: any) => !!r.eafPayment?.referenceNo;
+  const enlistedRows = regRecords.filter((r) => r.eafStatus === "Enlisted");
+  const readyToVerify = enlistedRows.filter(hasRef).length;
+  const tabCount = {
+    All: regRecords.length,
+    Enlisted: enlistedRows.length,
+    Enrolled: regRecords.length - enlistedRows.length,
+  };
+
+  const q = regSearch.trim().toLowerCase();
+  const rank = (r: any) => (r.eafStatus === "Enlisted" ? (hasRef(r) ? 0 : 1) : 2);
+  const filteredRows = regRecords
+    .filter((r) => {
+      const matchesTab = regFilter === "All" || r.eafStatus === regFilter;
+      const matchesSearch =
+        !q ||
+        r.studentId.toLowerCase().includes(q) ||
+        r.name.toLowerCase().includes(q) ||
+        r.section.toLowerCase().includes(q) ||
+        (r.eafPayment?.referenceNo || "").toLowerCase().includes(q);
+      return matchesTab && matchesSearch;
+    })
+    .sort((a, b) => rank(a) - rank(b) || a.studentId.localeCompare(b.studentId));
+
+  const isStaff = role === "registrar" || role === "admin";
 
   return (
-    <div className="flex flex-col md:flex-row min-h-dvh w-full bg-[#F4F6F5] text-zinc-900 font-sans">
-      {/* Sidebar */}
+    <div className="flex min-h-dvh w-full flex-col bg-[#F4F6F5] text-zinc-900 md:flex-row">
       {role === "admin" ? (
         <AdminNavbar />
       ) : role === "student" ? (
         <Navbar />
       ) : (
-        <aside
-          className={`sticky top-0 z-40 w-full md:h-dvh shrink-0 border-b md:border-b-0 md:border-r border-emerald-900/15 bg-white transition-[width] duration-200 ${
-            regCollapsed ? "md:w-[72px]" : "md:w-64"
-          }`}
-        >
-          <div
-            className={`flex flex-col h-full px-4 py-3 ${
-              regCollapsed ? "md:px-3 md:py-6" : "md:p-6"
-            }`}
-          >
-            <div
-              className={`flex items-center justify-between md:mb-8 md:pb-4 md:border-b md:border-emerald-900/10 ${
-                regCollapsed ? "md:flex-col md:gap-3" : ""
-              }`}
-            >
-              <Link href="/dashboard" className="flex items-center gap-3 group">
-                <Image
-                  src="/logo/dlsau.png"
-                  alt="DLSAU logo"
-                  width={40}
-                  height={40}
-                  className="h-9 w-9 md:h-10 md:w-10 object-contain shrink-0"
-                  priority
-                />
-                <div className={regCollapsed ? "md:hidden" : ""}>
-                  <span className="block font-bold tracking-tight text-emerald-950 leading-none">
-                    PATHWAYS
-                  </span>
-                  <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-700">
-                    DLSAU Portal
-                  </span>
-                </div>
-              </Link>
-
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setRegMobileOpen((p) => !p)}
-                  className="md:hidden flex h-9 w-9 items-center justify-center border border-emerald-900/20 text-emerald-950"
-                >
-                  <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-                    <path d={regMobileOpen ? "M6 18L18 6M6 6l12 12" : "M4 6h16M4 12h16M4 18h16"} />
-                  </svg>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setRegCollapsed((p) => !p)}
-                  title={regCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-                  className="hidden md:flex h-8 w-8 items-center justify-center border border-emerald-900/20 text-emerald-900 hover:bg-emerald-50"
-                >
-                  <svg
-                    className={`h-4 w-4 transition-transform ${regCollapsed ? "rotate-180" : ""}`}
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth={2}
-                  >
-                    <path d="M15 18l-6-6 6-6" />
-                  </svg>
-                </button>
-              </div>
-            </div>
-
-            <div
-              className={`hidden md:flex items-center gap-2 mb-3 text-[11px] font-bold uppercase tracking-wider text-zinc-400 ${
-                regCollapsed ? "md:hidden" : ""
-              }`}
-            >
-              <span className="h-2.5 w-1 bg-emerald-700" />
-              Registrar
-            </div>
-
-            <div
-              className={`${
-                regMobileOpen ? "flex" : "hidden"
-              } md:flex flex-col flex-1 justify-between pt-3 pb-2 md:p-0 mt-3 md:mt-0 border-t md:border-t-0 border-emerald-900/10`}
-            >
-              <nav className="flex flex-col gap-1.5">
-                {REGISTRAR_LINKS.map((item) => {
-                  const isActive =
-                    pathname === item.href || pathname.startsWith(`${item.href}/`);
-                  return (
-                    <Link
-                      key={item.href}
-                      href={item.href}
-                      title={regCollapsed ? item.label : undefined}
-                      className={`relative flex items-center gap-3 px-3.5 py-2.5 text-sm font-semibold transition-all ${
-                        regCollapsed ? "md:justify-center md:px-0" : ""
-                      } ${
-                        isActive
-                          ? "bg-emerald-900 text-white shadow-xs"
-                          : "text-zinc-600 hover:bg-emerald-50 hover:text-emerald-950"
-                      }`}
-                    >
-                      {isActive && (
-                        <span className="absolute left-0 top-0 bottom-0 w-1.5 bg-emerald-400" />
-                      )}
-                      <svg className="h-5 w-5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d={item.icon} />
-                      </svg>
-                      <span className={regCollapsed ? "md:hidden" : ""}>{item.label}</span>
-                    </Link>
-                  );
-                })}
-              </nav>
-
-              <div className="border-t border-emerald-900/10 pt-4 mt-4 md:pt-5 md:mt-6">
-                {!regCollapsed && (
-                  <div className="mb-4 border-l-2 border-emerald-700 pl-3">
-                    <p className="text-sm font-bold text-zinc-900 truncate">{name}</p>
-                    <p className="text-xs font-medium capitalize text-emerald-800">{role}</p>
-                  </div>
-                )}
-                <button
-                  onClick={handleLogout}
-                  className="flex w-full items-center justify-center border border-emerald-900/20 bg-emerald-50/50 px-4 py-2 text-xs font-bold uppercase tracking-wider text-emerald-950 transition-colors hover:bg-emerald-900 hover:text-white"
-                >
-                  {regCollapsed ? "Out" : "Sign Out"}
-                </button>
-              </div>
-            </div>
-          </div>
-        </aside>
+        <RegistrarSidebar pathname={pathname} name={name} onLogout={handleLogout} />
       )}
 
-      {/* Main Content Workspace */}
-      <main className="flex-1 min-w-0">
-        {/* Classic Top LaSalle Green Ribbon */}
-        <div className="h-2 w-full bg-emerald-900 flex">
-          <div className="h-full w-32 bg-emerald-600" />
-          <div className="h-full w-12 bg-emerald-400" />
-        </div>
-
-        {/* Institutional Sub-Bar (Archer's Hub style) */}
-        <div className="border-b border-emerald-900/10 bg-white px-4 py-2.5 sm:px-8 lg:px-10">
-          <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-2 text-xs">
-            <div className="flex items-center gap-2 font-semibold text-zinc-600">
-              <span className="font-bold uppercase tracking-wider text-emerald-900">
-                Office of the University Registrar
-              </span>
-              <span className="text-zinc-300">|</span>
-              <span>Academic Portal &amp; Online Enlistment System</span>
+      <main className="min-w-0 flex-1 border-t-4 border-t-emerald-900">
+        <div className="mx-auto flex max-w-5xl flex-col gap-5 p-4 sm:p-8">
+          {/* Header */}
+          <header className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h1 className="truncate text-2xl font-bold text-emerald-950">{name || "University User"}</h1>
+              <p className="mt-1 text-sm text-zinc-600">
+                {role === "student" ? (
+                  <>
+                    <span className="font-mono">{userId || "—"}</span> • {programCode} • {yearLevel}, {sectionCode}
+                  </>
+                ) : role === "registrar" ? (
+                  "Registrar"
+                ) : (
+                  "Administrator"
+                )}
+              </p>
             </div>
-            <div className="flex items-center gap-3">
-              <span className="font-mono text-zinc-600">
-                AY <strong className="text-zinc-900">{academicConfig.schoolYear}</strong> •{" "}
-                <strong className="text-zinc-900">{academicConfig.currentTerm}</strong>
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="border border-zinc-300 bg-white px-2.5 py-1 font-semibold text-zinc-700">
+                {academicConfig.currentTerm}, AY {academicConfig.schoolYear}
               </span>
               <span
-                className={`inline-flex items-center gap-1.5 border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
+                className={`border px-2.5 py-1 font-semibold ${
                   academicConfig.enrollmentOpen
                     ? "border-emerald-300 bg-emerald-50 text-emerald-900"
-                    : "border-zinc-300 bg-zinc-100 text-zinc-700"
+                    : "border-zinc-300 bg-zinc-100 text-zinc-600"
                 }`}
               >
-                <span
-                  className={`h-1.5 w-1.5 ${
-                    academicConfig.enrollmentOpen ? "bg-emerald-600 animate-pulse" : "bg-zinc-500"
-                  }`}
-                />
-                {academicConfig.enrollmentOpen ? "Enlistment Open" : "Enlistment Closed"}
+                Enlistment {academicConfig.enrollmentOpen ? "open" : "closed"}
               </span>
-            </div>
-          </div>
-        </div>
-
-        <div className="mx-auto max-w-7xl p-4 sm:p-8 lg:p-10">
-          {/* Student Official Record Header Strip */}
-          <header className="mb-6 border border-emerald-900/15 bg-white shadow-xs">
-            <div className="flex flex-col justify-between gap-4 border-b border-zinc-200 border-l-4 border-l-emerald-800 px-6 py-5 sm:flex-row sm:items-center">
-              <div>
-                <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-800">
-                  {role === "student"
-                    ? "Official Student Record"
-                    : role === "registrar"
-                      ? "Registrar Operations Center"
-                      : "System Administration"}
-                </p>
-                <h1 className="mt-0.5 text-2xl font-bold tracking-tight text-emerald-950 md:text-3xl">
-                  {name || "University User"}
-                </h1>
-                {role !== "student" && (
-                  <p className="mt-1 text-xs text-zinc-500">
-                    De La Salle Araneta University • Institutional Management Portal
-                  </p>
-                )}
-              </div>
-
               {role === "student" && (
-                <div className="flex flex-wrap items-center gap-2.5">
-                  <button
-                    onClick={() => setShowProfile((v) => !v)}
-                    className="border border-emerald-900/20 bg-emerald-50/60 px-4 py-2 text-xs font-bold uppercase tracking-wider text-emerald-950 transition-colors hover:bg-emerald-900 hover:text-white"
+                <button onClick={() => setShowProfile((v) => !v)} className={secondaryBtn}>
+                  {showProfile ? "Back to dashboard" : "My profile"}
+                </button>
+              )}
+            </div>
+          </header>
+
+          {/* Student */}
+          {role === "student" && showProfile && userId && <StudentProfile userId={userId} />}
+
+          {role === "student" && !showProfile && (
+            <>
+              <NextActionCard action={getNextAction()} />
+
+              <ProgressTracker
+                steps={[
+                  { label: "Clearances", done: allCleared },
+                  { label: "Courses", done: hasCourses },
+                  { label: "Confirmation", done: isConfirmed },
+                ]}
+              />
+
+              {!allCleared && <ClearanceList items={clearanceList} />}
+
+              <Card
+                title="Study load"
+                right={
+                  <span className={`text-xs font-semibold ${overloaded ? "text-red-700" : "text-zinc-500"}`}>
+                    {totalUnits} of {maxUnits} units{overloaded ? " (over limit, needs Dean approval)" : ""}
+                  </span>
+                }
+              >
+                {!hasCourses ? (
+                  <div className="px-6 py-10 text-center">
+                    <p className="text-sm font-semibold text-zinc-700">No courses enlisted yet.</p>
+                    {allCleared && academicConfig.enrollmentOpen && (
+                      <Link href="/catalog" className={`${primaryBtn} mt-4`}>
+                        Open catalog
+                      </Link>
+                    )}
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm">
+                      <thead>
+                        <tr className="border-b border-zinc-200 text-xs text-zinc-500">
+                          <th className="py-2.5 pl-5 pr-3 font-semibold">Code</th>
+                          <th className="px-3 py-2.5 font-semibold">Title</th>
+                          <th className="px-3 py-2.5 font-semibold">Section</th>
+                          <th className="px-3 py-2.5 text-center font-semibold">Units</th>
+                          <th className="py-2.5 pl-3 pr-5 text-right font-semibold">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-zinc-200">
+                        {enlistments.map((subj) => {
+                          const enrolled = subj.status === "Enrolled" || subj.source === "block";
+                          return (
+                            <tr key={subj.code}>
+                              <td className="whitespace-nowrap py-3 pl-5 pr-3 font-mono font-bold text-emerald-950">{subj.code}</td>
+                              <td className="min-w-[160px] px-3 py-3 text-zinc-800">{subj.title || "Course offering"}</td>
+                              <td className="whitespace-nowrap px-3 py-3 font-mono text-zinc-600">{subj.section || sectionCode}</td>
+                              <td className="px-3 py-3 text-center font-mono font-bold">{subj.units || 0}</td>
+                              <td className="whitespace-nowrap py-3 pl-3 pr-5 text-right">
+                                <span
+                                  className={`border px-2 py-0.5 text-xs font-semibold ${
+                                    enrolled
+                                      ? "border-emerald-900 bg-emerald-900 text-white"
+                                      : "border-sky-300 bg-sky-50 text-sky-900"
+                                  }`}
+                                >
+                                  {enrolled ? "Enrolled" : "Enlisted"}
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </Card>
+
+              <p className="text-xs text-zinc-500">
+                Prerequisite overrides and overloads need Registrar approval. Questions?{" "}
+                <a href="mailto:registrar@dlsau.edu.ph" className="font-semibold text-emerald-900 underline">
+                  registrar@dlsau.edu.ph
+                </a>
+              </p>
+            </>
+          )}
+
+          {/* Registrar / Admin */}
+          {isStaff && (
+            <>
+              {regToast && (
+                <div className="fixed bottom-6 right-6 z-50" role="status" aria-live="polite">
+                  <div
+                    className={`flex items-stretch border bg-white shadow-lg ${
+                      regToast.type === "error" ? "border-red-200 text-red-900" : "border-emerald-200 text-emerald-950"
+                    }`}
                   >
-                    {showProfile ? "← Return to Hub" : "Student Profile & Info"}
-                  </button>
-                  <Link
-                    href={isConfirmed ? "/schedule" : "/catalog"}
-                    className="border-l-4 border-emerald-400 bg-emerald-900 px-4 py-2 text-xs font-bold uppercase tracking-wider text-white transition-colors hover:bg-emerald-800"
-                  >
-                    {isConfirmed ? "View EAF / Schedule →" : "Course Enlistment →"}
+                    <div className={`w-1.5 shrink-0 ${regToast.type === "error" ? "bg-red-600" : "bg-emerald-700"}`} />
+                    <div className="px-4 py-3 text-sm font-semibold">{regToast.text}</div>
+                  </div>
+                </div>
+              )}
+
+              {role === "admin" && (
+                <div className="flex flex-wrap gap-2">
+                  <Link href="/admin/students" className={primaryBtn}>
+                    Manage students
+                  </Link>
+                  <Link href="/applications" className={secondaryBtn}>
+                    Review admissions
                   </Link>
                 </div>
               )}
-            </div>
 
-            {/* Key Student Metadata Strip (Archer's Hub Style) */}
-            {role === "student" && (
-              <div className="grid grid-cols-2 divide-y divide-zinc-200 bg-zinc-50/50 sm:grid-cols-3 lg:grid-cols-6 lg:divide-y-0 lg:divide-x">
-                <div className="px-5 py-3">
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">
-                    ID Number
-                  </p>
-                  <p className="mt-0.5 font-mono text-sm font-bold text-zinc-900">
-                    {userId || "—"}
-                  </p>
-                </div>
-                <div className="px-5 py-3">
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">
-                    Degree Program
-                  </p>
-                  <p className="mt-0.5 text-sm font-bold text-emerald-950 truncate">
-                    {programCode}
-                  </p>
-                </div>
-                <div className="px-5 py-3">
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">
-                    Year &amp; Section
-                  </p>
-                  <p className="mt-0.5 text-sm font-bold text-zinc-900">
-                    {yearLevel} • <span className="font-mono">{sectionCode}</span>
-                  </p>
-                </div>
-                <div className="px-5 py-3">
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">
-                    Student Standing
-                  </p>
-                  <p className="mt-0.5 text-sm font-bold text-zinc-900">
-                    {studentStanding}
-                  </p>
-                </div>
-                <div className="px-5 py-3">
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">
-                    Term Load
-                  </p>
-                  <p className="mt-0.5 font-mono text-sm font-bold text-emerald-950">
-                    {totalUnits} / {maxUnits} Units
-                  </p>
-                </div>
-                <div className="px-5 py-3">
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">
-                    Registration Status
-                  </p>
-                  <p
-                    className={`mt-0.5 text-xs font-bold uppercase tracking-wider ${
-                      isConfirmed
-                        ? "text-emerald-800"
-                        : blockedCount > 0
-                          ? "text-red-700"
-                          : hasAddedSubjects
-                            ? "text-sky-800"
-                            : "text-amber-800"
-                    }`}
-                  >
-                    {isConfirmed
-                      ? "Officially Enrolled"
-                      : blockedCount > 0
-                        ? "On Hold"
-                        : hasAddedSubjects
-                          ? "Enlisted (Unconfirmed)"
-                          : allCleared
-                            ? "Cleared to Enlist"
-                            : "Pending Clearance"}
-                  </p>
-                </div>
-              </div>
-            )}
-          </header>
-
-          {/* ---------- STUDENT (PROFILE VIEW) ---------- */}
-          {role === "student" && showProfile && userId && (
-            <StudentProfile userId={userId} />
-          )}
-
-          {/* ---------- STUDENT (ARCHER'S HUB OVERVIEW) ---------- */}
-          {role === "student" && !showProfile && (
-            <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-              {/* Left / Primary Column (8 cols) */}
-              <div className="flex flex-col gap-6 lg:col-span-8">
-                {/* 1. Interactive Enrollment Stepper */}
-                <EnrollmentStepper
-                  enrollmentOpen={academicConfig.enrollmentOpen}
-                  clearances={clearanceList}
-                  subjectCount={enlistments.length}
-                  totalUnits={totalUnits}
-                  maxUnits={maxUnits}
-                  isConfirmed={isConfirmed}
-                />
-
-                {/* 2. Current Term Study Load / EAF Preview */}
-                <section className="border border-emerald-900/15 bg-white shadow-xs">
-                  <SectionHeader
-                    title="Current Trimester Study Load (EAF Preview)"
-                    subtitle={`${academicConfig.schoolYear} • ${academicConfig.currentTerm}`}
-                    rightContent={
-                      <span className="font-mono text-xs font-bold text-emerald-950">
-                        Total: {totalUnits} / {maxUnits} Units
-                      </span>
-                    }
-                  />
-
-                  {enlistments.length === 0 ? (
-                    <div className="px-6 py-10 text-center">
-                      <p className="text-sm font-semibold text-zinc-700">
-                        No courses enlisted for {academicConfig.currentTerm} yet.
-                      </p>
-                      <p className="mt-1 text-xs text-zinc-500">
-                        Once your department clearances are complete, proceed to the Subjects tab to build your schedule.
-                      </p>
-                      <Link
-                        href="/catalog"
-                        className="mt-4 inline-flex border border-emerald-900/20 bg-emerald-50/60 px-4 py-2 text-xs font-bold uppercase tracking-wider text-emerald-950 hover:bg-emerald-900 hover:text-white transition-colors"
-                      >
-                        Browse Course Offerings →
-                      </Link>
-                    </div>
-                  ) : (
-                    <>
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-left text-sm">
-                          <thead>
-                            <tr className="border-b border-zinc-200 bg-zinc-50/40 text-[11px] font-bold uppercase tracking-wider text-zinc-500">
-                              <th className="py-2.5 pl-5 pr-3">Code</th>
-                              <th className="py-2.5 px-3">Course Title</th>
-                              <th className="py-2.5 px-3">Section</th>
-                              <th className="py-2.5 px-3 text-center">Units</th>
-                              <th className="py-2.5 pl-3 pr-5 text-right">Status</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-zinc-200/80 text-xs">
-                            {enlistments.map((subj) => {
-                              const enrolled =
-                                subj.status === "Enrolled" || subj.source === "block";
-                              return (
-                                <tr
-                                  key={subj.code}
-                                  className="transition-colors hover:bg-emerald-50/30"
-                                >
-                                  <td className="py-3 pl-5 pr-3 font-mono font-bold text-emerald-950 whitespace-nowrap">
-                                    {subj.code}
-                                  </td>
-                                  <td className="py-3 px-3 font-medium text-zinc-800 min-w-[180px]">
-                                    {subj.title || "Course Offering"}
-                                  </td>
-                                  <td className="py-3 px-3 font-mono text-zinc-600 whitespace-nowrap">
-                                    {subj.section || sectionCode}
-                                  </td>
-                                  <td className="py-3 px-3 text-center font-mono font-bold text-zinc-800">
-                                    {subj.units || 0}
-                                  </td>
-                                  <td className="py-3 pl-3 pr-5 text-right whitespace-nowrap">
-                                    <span
-                                      className={`inline-flex items-center border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
-                                        enrolled
-                                          ? "border-emerald-900 bg-emerald-900 text-white"
-                                          : "border-sky-300 bg-sky-50 text-sky-900"
-                                      }`}
-                                    >
-                                      {enrolled ? "Enrolled" : "Enlisted"}
-                                    </span>
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-zinc-200 bg-zinc-50/60 px-5 py-3 text-xs">
-                        <span className="text-zinc-500">
-                          {isConfirmed
-                            ? "Your study load is officially registered."
-                            : "Courses marked Enlisted must be confirmed in the Catalog tab."}
-                        </span>
-                        <div className="flex items-center gap-4 font-bold text-emerald-900">
-                          <Link href="/catalog" className="hover:underline">
-                            Add / Drop Courses
-                          </Link>
-                          <Link href="/schedule" className="hover:underline">
-                            Full Timetable →
-                          </Link>
-                        </div>
-                      </div>
-                    </>
-                  )}
-                </section>
-
-                {/* 3. Institutional Clearance & Accountability Ledger */}
-                <section
-                  id="clearances"
-                  className="border border-emerald-900/15 bg-white shadow-xs"
-                >
-                  <SectionHeader
-                    title="Department Clearance & Accountability Ledger"
-                    subtitle="All 8 institutional gates must be cleared prior to subject enlistment"
-                    rightContent={
-                      <StatusBadge
-                        status={
-                          blockedCount > 0
-                            ? "blocked"
-                            : allCleared
-                              ? "cleared"
-                              : "pending"
-                        }
-                      />
-                    }
-                  />
-                  <div className="grid grid-cols-1 divide-y divide-zinc-200 sm:grid-cols-2 sm:divide-y-0 sm:gap-px sm:bg-zinc-200">
-                    {clearanceList.map((c) => (
-                      <div
-                        key={c.key}
-                        className={`flex items-center justify-between gap-3 bg-white px-5 py-3.5 ${
-                          c.status === "blocked"
-                            ? "bg-red-50/30"
-                            : c.status === "pending"
-                              ? "bg-amber-50/20"
-                              : "bg-white"
+              <Card
+                title="EAF verification"
+                right={
+                  <span className="text-xs text-zinc-500">
+                    {readyToVerify} ready to verify • {enlistedRows.length - readyToVerify} awaiting payment
+                  </span>
+                }
+              >
+                <div className="flex flex-col gap-3 border-b border-zinc-200 px-5 py-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="inline-flex border border-zinc-300" role="group" aria-label="Filter by status">
+                    {(["Enlisted", "Enrolled", "All"] as const).map((tab) => (
+                      <button
+                        key={tab}
+                        type="button"
+                        onClick={() => setRegFilter(tab)}
+                        aria-pressed={regFilter === tab}
+                        className={`px-3.5 py-1.5 text-xs font-semibold ${
+                          regFilter === tab ? "bg-emerald-900 text-white" : "text-zinc-700 hover:bg-emerald-50"
                         }`}
                       >
-                        <div className="min-w-0">
-                          <p className="text-xs font-bold text-zinc-900 truncate">
-                            {c.label}
-                          </p>
-                          <p className="text-[11px] text-zinc-500 truncate">
-                            {c.office}
-                          </p>
-                        </div>
-                        <StatusBadge status={c.status} />
-                      </div>
+                        {tab} <span className="font-mono opacity-70">{tabCount[tab]}</span>
+                      </button>
                     ))}
                   </div>
-                </section>
-              </div>
-
-              {/* Right Column: Quick Services, Deadlines & Advisories (4 cols) */}
-              <div className="flex flex-col gap-6 lg:col-span-4">
-                {/* Online Services Directory */}
-                <section className="border border-emerald-900/15 bg-white shadow-xs">
-                  <SectionHeader
-                    title="Student Self-Service"
-                    subtitle="Quick access to portal modules"
+                  <input
+                    type="text"
+                    value={regSearch}
+                    onChange={(e) => setRegSearch(e.target.value)}
+                    placeholder="Search ID, name, section, reference"
+                    aria-label="Search the queue"
+                    className="w-full border border-zinc-300 px-3 py-1.5 text-sm placeholder:text-zinc-400 focus:border-emerald-800 focus:outline-none sm:w-72"
                   />
-                  <div className="divide-y divide-zinc-200">
-                    {[
-                      {
-                        label: "Course Offerings & Enlistment",
-                        desc: "Search open sections, add or drop subjects",
-                        href: "/catalog",
-                        tag: "Enlist",
-                      },
-                      {
-                        label: "Weekly Class Schedule",
-                        desc: "View room assignments and time blocks",
-                        href: "/schedule",
-                        tag: "Timetable",
-                      },
-                      {
-                        label: "Curriculum Audit & Grades",
-                        desc: "Track GWA, passed units, and prerequisites",
-                        href: "/ledger",
-                        tag: "Records",
-                      },
-                    ].map((srv) => (
-                      <Link
-                        key={srv.href}
-                        href={srv.href}
-                        className="group flex items-start justify-between gap-3 px-5 py-3.5 transition-colors hover:bg-emerald-50/50"
-                      >
-                        <div>
-                          <p className="text-xs font-bold text-emerald-950 group-hover:text-emerald-700">
-                            {srv.label}
-                          </p>
-                          <p className="mt-0.5 text-[11px] text-zinc-500">
-                            {srv.desc}
-                          </p>
-                        </div>
-                        <span className="shrink-0 border border-emerald-900/15 bg-zinc-50 px-2 py-0.5 font-mono text-[10px] font-bold uppercase text-emerald-900 group-hover:bg-emerald-900 group-hover:text-white transition-colors">
-                          {srv.tag} →
-                        </span>
-                      </Link>
-                    ))}
-                  </div>
-                </section>
-
-                {/* Trimester Load Meter Card */}
-                <section className="border border-emerald-900/15 bg-white shadow-xs">
-                  <SectionHeader title="Load Utilization" />
-                  <div className="p-5">
-                    <div className="flex items-baseline justify-between">
-                      <span className="text-xs font-semibold text-zinc-600">
-                        Enlisted / Maximum Allowable
-                      </span>
-                      <span className="font-mono text-lg font-bold text-emerald-950">
-                        {totalUnits} / {maxUnits} Units
-                      </span>
-                    </div>
-                    <div className="mt-2.5 h-2.5 w-full bg-zinc-100 border border-zinc-200">
-                      <div
-                        className="h-full bg-emerald-800 transition-all duration-300"
-                        style={{
-                          width: `${Math.min((totalUnits / (maxUnits || 1)) * 100, 100)}%`,
-                        }}
-                      />
-                    </div>
-                    <p className="mt-2.5 text-[11px] text-zinc-500 leading-relaxed">
-                      Overload requests exceeding{" "}
-                      <strong className="font-mono text-zinc-700">{maxUnits} units</strong>{" "}
-                      require endorsement from the College Dean and approval from the Office of the Registrar.
-                    </p>
-                  </div>
-                </section>
-
-                {/* Registrar Advisory Bulletin */}
-                <section className="border border-emerald-900/15 bg-white shadow-xs">
-                  <SectionHeader
-                    title="Registrar Bulletin"
-                    subtitle="Important reminders for this term"
-                  />
-                  <div className="divide-y divide-zinc-200 text-xs">
-                    <div className="p-4">
-                      <span className="inline-block bg-emerald-100 px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase text-emerald-900">
-                        Prerequisite Policy
-                      </span>
-                      <p className="mt-1.5 font-semibold text-zinc-800">
-                        Strict Prerequisite Enforcement
-                      </p>
-                      <p className="mt-1 text-[11px] text-zinc-600 leading-relaxed">
-                        Courses with unsatisfied prerequisites in your Curriculum Audit Ledger cannot be enlisted without a formal Registrar Override.
-                      </p>
-                    </div>
-                    <div className="p-4">
-                      <span className="inline-block bg-amber-100 px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase text-amber-900">
-                        Slot Reservation
-                      </span>
-                      <p className="mt-1.5 font-semibold text-zinc-800">
-                        Unconfirmed Loads
-                      </p>
-                      <p className="mt-1 text-[11px] text-zinc-600 leading-relaxed">
-                        Adding a course to your list does not guarantee a slot until you click Confirm Schedule.
-                      </p>
-                    </div>
-                    <div className="bg-zinc-50/70 px-4 py-3 text-[11px] text-zinc-500">
-                      Need assistance? Contact{" "}
-                      <a
-                        href="mailto:registrar@dlsau.edu.ph"
-                        className="font-bold text-emerald-900 underline"
-                      >
-                        registrar@dlsau.edu.ph
-                      </a>
-                    </div>
-                  </div>
-                </section>
-              </div>
-            </div>
-          )}
-
-          {/* ---------- REGISTRAR VIEW ---------- */}
-          {role === "registrar" && (
-            <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
-              <div className="md:col-span-3 flex items-center justify-between gap-4 border border-emerald-200 border-l-4 border-l-emerald-700 bg-white px-6 py-4 shadow-xs">
-                <div className="flex items-center gap-3">
-                  <span className="h-2.5 w-2.5 bg-emerald-600 animate-pulse" />
-                  <p className="text-sm font-semibold text-emerald-950">
-                    Enrollment for{" "}
-                    <strong>
-                      {academicConfig.schoolYear} ({academicConfig.currentTerm})
-                    </strong>{" "}
-                    is currently{" "}
-                    <strong className="uppercase">
-                      {academicConfig.enrollmentOpen ? "open" : "closed"}
-                    </strong>
-                    .
-                  </p>
                 </div>
-                <Link
-                  href="/sections"
-                  className="border-l-4 border-emerald-400 bg-emerald-900 px-4 py-2 text-xs font-bold uppercase tracking-wider text-white hover:bg-emerald-800"
-                >
-                  Manage Sections →
-                </Link>
-              </div>
-            </div>
-          )}
 
-          {/* ---------- ADMIN VIEW ---------- */}
-          {role === "admin" && (
-            <div className="flex flex-col gap-6">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border border-emerald-200 border-l-4 border-l-emerald-700 bg-white px-6 py-5 shadow-xs">
-                <div className="flex items-center gap-4">
-                  <span className="h-3 w-3 bg-emerald-600 animate-pulse shrink-0" />
-                  <div>
-                    <p className="text-sm font-bold text-zinc-900">
-                      All systems operational ({academicConfig.schoolYear} •{" "}
-                      {academicConfig.currentTerm})
-                    </p>
-                    <p className="mt-0.5 text-xs text-zinc-500">
-                      Manage student profiles, department clearances, curriculum configurations, and trimester rollovers.
-                    </p>
+                {filteredRows.length === 0 ? (
+                  <div className="px-6 py-12 text-center text-sm text-zinc-500">
+                    {regRecords.length === 0
+                      ? `No students have enlisted for ${academicConfig.currentTerm} yet.`
+                      : "No records match your filter."}
                   </div>
-                </div>
-                <Link
-                  href="/admin/students"
-                  className="shrink-0 border-l-4 border-emerald-400 bg-emerald-900 px-4 py-2.5 text-xs font-bold uppercase tracking-wider text-white hover:bg-emerald-800"
-                >
-                  Manage Student Profiles →
-                </Link>
-              </div>
-            </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full whitespace-nowrap text-left text-sm">
+                      <thead>
+                        <tr className="border-b border-zinc-200 text-xs text-zinc-500">
+                          <th className="px-5 py-2.5 font-semibold">Student</th>
+                          <th className="px-5 py-2.5 font-semibold">Load</th>
+                          <th className="px-5 py-2.5 font-semibold">Payment</th>
+                          <th className="px-5 py-2.5 text-right font-semibold">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-zinc-200">
+                        {filteredRows.map((row) => {
+                          const isBusy = processingStudentId === row.studentId;
+                          const isEnrolled = row.eafStatus === "Enrolled";
+                          return (
+                            <tr key={row.studentId} className="hover:bg-emerald-50/40">
+                              <td className="px-5 py-3">
+                                <div className="font-semibold text-zinc-900">{row.name}</div>
+                                <div className="font-mono text-xs text-zinc-500">
+                                  {row.studentId} • {row.program} {row.section}
+                                </div>
+                              </td>
+                              <td className="px-5 py-3 text-xs">
+                                <span className="font-mono font-bold text-emerald-950">{row.units} units</span>
+                                <span className="block text-zinc-500">{row.courses.length} courses</span>
+                              </td>
+                              <td className="px-5 py-3 text-xs">
+                                {hasRef(row) ? (
+                                  <>
+                                    <span className="font-mono font-bold text-emerald-950">{row.eafPayment.referenceNo}</span>
+                                    <span className="block text-zinc-500">{row.eafPayment.channel}</span>
+                                  </>
+                                ) : (
+                                  <span className="font-medium text-amber-700">No reference yet</span>
+                                )}
+                              </td>
+                              <td className="px-5 py-3 text-right">
+                                {isEnrolled ? (
+                                  <button
+                                    type="button"
+                                    disabled={isBusy}
+                                    onClick={() => handleSetEAFStatus(row.studentId, "Enlisted")}
+                                    className="border border-zinc-300 bg-white px-3 py-1.5 text-xs font-semibold text-zinc-700 hover:bg-amber-50 disabled:opacity-50"
+                                  >
+                                    {isBusy ? "Updating..." : "Revert"}
+                                  </button>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    disabled={isBusy}
+                                    onClick={() => handleSetEAFStatus(row.studentId, "Enrolled")}
+                                    className="bg-emerald-900 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-800 disabled:opacity-50"
+                                  >
+                                    {isBusy ? "Approving..." : "Approve"}
+                                  </button>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </Card>
+            </>
           )}
         </div>
       </main>

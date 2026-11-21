@@ -58,8 +58,7 @@ function formatDate(value?: string) {
 /**
  * Reads the student's record from Firestore and displays it.
  * Assumes the document lives at `users/{userId}` — change COLLECTION if yours differs.
- */
-const COLLECTIONS = ["users", "students"];
+ */const COLLECTIONS = ["students"];
 
 export default function StudentProfile({ userId }: { userId: string }) {
   const [data, setData] = useState<StudentDoc | null>(null);

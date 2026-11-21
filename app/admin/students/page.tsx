@@ -269,27 +269,31 @@ export default function AdminDashboardPage() {
     setTimeout(() => setToastMessage(null), 3500);
   }
 
-  // 1. Verify Role & Session
+// 1. Verify Firebase Auth + Custom Claim, then fetch dashboard data
   useEffect(() => {
-    const storedRole = localStorage.getItem("mock_user_role");
-    if (!storedRole || storedRole !== "admin") {
-      router.push("/");
-      return;
-    }
-    setRole(storedRole);
-
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      if (!user && process.env.NODE_ENV !== "development") {
-        console.warn("No Firebase session active.");
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (!user) {
+        router.push("/");
+        return;
       }
-    });
-    return () => unsubscribe();
-  }, [router]);
 
-  // 2. Fetch All Students & Global Academic Config
-  useEffect(() => {
-    async function fetchDashboardData() {
       try {
+        const tokenResult = await user.getIdTokenResult(true);
+        const claimRole = tokenResult.claims.role as string | undefined;
+
+        if (claimRole !== "admin") {
+          console.error(
+            "Signed in as",
+            user.email,
+            "but token has role claim:",
+            claimRole ?? "(none)"
+          );
+          router.push("/");
+          return;
+        }
+
+        setRole(claimRole);
+
         const [config, studentsSnap] = await Promise.all([
           getAcademicConfig(),
           getDocs(query(collection(db, "students"), orderBy("createdAt", "desc"))),
@@ -307,13 +311,10 @@ export default function AdminDashboardPage() {
       } finally {
         setIsLoading(false);
       }
-    }
+    });
 
-    if (role === "admin") {
-      fetchDashboardData();
-    }
-  }, [role]);
-
+    return () => unsubscribe();
+  }, [router]);
   // Save changes to Global Academic Config
   async function handleUpdateAcademicConfig(patch: Partial<AcademicConfig>) {
     const nextConfig: AcademicConfig = {

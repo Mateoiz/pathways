@@ -20,8 +20,7 @@ const ROLE_REDIRECTS: Record<string, string> = {
   registrar: "/dashboard",
 };
 
-const SESSION_KEYS = ["mock_user_role", "mock_user_name", "mock_user_id"] as const;
-
+const SESSION_KEYS = ["mock_user_role", "mock_user_name", "mock_user_id", "mock_must_change_pw"] as const;
 // Creating a login on first sign-in lets anyone claim any student number or staff email whose
 // Auth account doesn't exist yet. It is only allowed on a local dev machine.
 // In production, create logins on the server when an application is approved.
@@ -115,15 +114,73 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [checkingSession, setCheckingSession] = useState(true);
 
-  const [identifierTouched, setIdentifierTouched] = useState(false);
+const [identifierTouched, setIdentifierTouched] = useState(false);
   const [passwordTouched, setPasswordTouched] = useState(false);
 
-  // Send already-signed-in users straight to their home page
+  // Application tracker states
+  const [trackRef, setTrackRef] = useState("");
+  const [trackLoading, setTrackLoading] = useState(false);
+  const [trackError, setTrackError] = useState("");
+  const [trackResult, setTrackResult] = useState<{
+    reference: string;
+    status: string;
+    studentNumber?: string;
+    schoolEmail?: string;
+    applicantName?: string;
+    reviewNote?: string;
+  } | null>(null);
+
+  async function handleTrackApplication(e: React.FormEvent) {
+    e.preventDefault();
+    const ref = trackRef.trim().toUpperCase();
+    if (!ref) {
+      setTrackError("Enter your tracking number (e.g. APP-2026-XXXXXX).");
+      return;
+    }
+    setTrackLoading(true);
+    setTrackError("");
+    setTrackResult(null);
+    try {
+      const snap = await getDoc(doc(db, "applications", ref));
+      if (!snap.exists()) {
+        setTrackError("No application found with that tracking number.");
+        return;
+      }
+      const d = snap.data();
+      const first = (d.applicant?.firstName || "").trim();
+      const last = (d.applicant?.lastName || "").trim();
+      const clean = (s: string) =>
+        s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/\s+/g, "").replace(/[^a-z0-9]/g, "");
+      const fPart = clean(first.split(/\s+/)[0] || "");
+      const lPart = clean(last);
+      const schoolEmail = fPart || lPart ? `${fPart}${fPart && lPart ? "." : ""}${lPart}@dlsau.edu.ph` : "";
+
+      setTrackResult({
+        reference: ref,
+        status: d.status || "pending",
+        studentNumber: d.studentNumber || "",
+        schoolEmail,
+        applicantName: `${first} ${last}`.trim(),
+        reviewNote: d.reviewNote || "",
+      });
+    } catch {
+      setTrackError("Couldn't check your application right now. Please try again.");
+    } finally {
+      setTrackLoading(false);
+    }
+  }
+
+// Send already-signed-in users straight to their home page (or force password change if flagged)
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       const storedRole = localStorage.getItem("mock_user_role");
+      const mustChangePw = localStorage.getItem("mock_must_change_pw") === "true";
       if (user && storedRole && ROLE_REDIRECTS[storedRole]) {
-        router.replace(ROLE_REDIRECTS[storedRole]);
+        if (storedRole === "student" && mustChangePw) {
+          router.replace("/auth/force-change-password");
+        } else {
+          router.replace(ROLE_REDIRECTS[storedRole]);
+        }
         return;
       }
       if (!user) SESSION_KEYS.forEach((k) => localStorage.removeItem(k)); // clear stale data
@@ -206,11 +263,36 @@ export default function LoginPage() {
         return;
       }
 
+// 4. Force password change if ANY student logs in using "password123", their Student ID, or has mustChangePassword: true
+      let mustChange = false;
+      if (profile.role === "student") {
+        const isDefaultPassword =
+          password === "password123" ||
+          password.toLowerCase() === profile.studentId.toLowerCase();
+
+        const studentDocSnap = await getDoc(doc(db, "students", profile.studentId));
+        const docFlag = studentDocSnap.exists() && studentDocSnap.data().mustChangePassword === true;
+
+        if (isDefaultPassword || docFlag) {
+          mustChange = true;
+        }
+      }
+
+      if (mustChange) {
+        localStorage.setItem("mock_must_change_pw", "true");
+      } else {
+        localStorage.removeItem("mock_must_change_pw");
+      }
+
       localStorage.setItem("mock_user_role", profile.role);
       localStorage.setItem("mock_user_name", profile.name);
       localStorage.setItem("mock_user_id", profile.studentId);
 
-      router.push(ROLE_REDIRECTS[profile.role]);
+      if (mustChange) {
+        router.replace("/auth/force-change-password");
+      } else {
+        router.replace(ROLE_REDIRECTS[profile.role]);
+      }
     } catch (error) {
       if (signedIn) await signOut(auth).catch(() => {});
       setSubmitError(authErrorMessage(error));
@@ -530,7 +612,7 @@ export default function LoginPage() {
             </div>
           </div>
 
-          {/* Enroll now (all screen sizes) */}
+{/* Enroll now (all screen sizes) */}
           <div className="mt-4 flex flex-col gap-3 border border-emerald-900/15 border-l-4 border-l-emerald-700 bg-white px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <p className="text-sm font-bold text-zinc-900">New student?</p>
@@ -542,6 +624,101 @@ export default function LoginPage() {
             >
               Enroll now →
             </Link>
+          </div>
+
+          {/* Track Application Status */}
+          <div className="mt-4 border border-emerald-900/15 bg-white px-5 py-4">
+            <p className="text-sm font-bold text-zinc-900">Track your application</p>
+            <p className="mt-0.5 text-xs text-zinc-600">
+              Enter your tracking number to check approval status and get your Student ID &amp; default password.
+            </p>
+
+            <form onSubmit={handleTrackApplication} className="mt-3 flex gap-2">
+              <input
+                type="text"
+                value={trackRef}
+                onChange={(e) => {
+                  setTrackRef(e.target.value);
+                  setTrackError("");
+                }}
+                placeholder="APP-2026-XXXXXX"
+                className="flex-1 border border-zinc-300 bg-zinc-50/50 px-3 py-2 font-mono text-xs uppercase text-zinc-900 placeholder:text-zinc-400 focus:border-emerald-800 focus:bg-white focus:outline-none"
+              />
+              <button
+                type="submit"
+                disabled={trackLoading}
+                className="shrink-0 bg-emerald-900 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-800 disabled:opacity-50"
+              >
+                {trackLoading ? "Checking..." : "Check Status"}
+              </button>
+            </form>
+
+            {trackError && <p className="mt-2 text-xs font-medium text-red-600">{trackError}</p>}
+
+            {trackResult && (
+              <div className="mt-3 border border-emerald-900/15 bg-emerald-50/40 p-3.5 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-bold text-zinc-900">
+                    {trackResult.applicantName || trackResult.reference}
+                  </span>
+                  <span
+                    className={`px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
+                      trackResult.status === "approved"
+                        ? "bg-emerald-800 text-white"
+                        : trackResult.status === "rejected"
+                          ? "bg-red-700 text-white"
+                          : "bg-amber-100 text-amber-900"
+                    }`}
+                  >
+                    {trackResult.status === "approved"
+                      ? "Approved"
+                      : trackResult.status === "rejected"
+                        ? "Not Approved"
+                        : "Pending Review"}
+                  </span>
+                </div>
+
+                {trackResult.status === "approved" && trackResult.studentNumber ? (
+                  <div className="mt-2.5 space-y-1.5 border-t border-emerald-900/10 pt-2.5">
+                    <div className="flex justify-between">
+                      <span className="text-zinc-500">Student ID:</span>
+                      <span className="font-mono font-bold text-emerald-950">{trackResult.studentNumber}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-zinc-500">Default Password:</span>
+                      <span className="font-mono font-bold text-emerald-950">password123</span>
+                    </div>
+                    {trackResult.schoolEmail && (
+                      <div className="flex justify-between gap-2">
+                        <span className="text-zinc-500 shrink-0">School Email:</span>
+                        <span className="font-mono font-bold text-zinc-800 truncate">{trackResult.schoolEmail}</span>
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIdentifier(trackResult.studentNumber || "");
+                        setPassword("password123");
+                        setIdentifierError("");
+                        setPasswordError("");
+                        window.scrollTo({ top: 0, behavior: "smooth" });
+                      }}
+                      className="mt-2 w-full border border-emerald-800 bg-white py-1.5 text-xs font-bold text-emerald-900 hover:bg-emerald-800 hover:text-white transition-colors"
+                    >
+                      Use these credentials to Sign In ↑
+                    </button>
+                  </div>
+                ) : trackResult.status === "rejected" ? (
+                  <p className="mt-2 text-red-800">
+                    {trackResult.reviewNote || "Please contact the Registrar's Office for details."}
+                  </p>
+                ) : (
+                  <p className="mt-2 text-zinc-600">
+                    Your application is still being reviewed by the Registrar&apos;s Office. Check back here anytime.
+                  </p>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </div>

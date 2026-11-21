@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import {
   collection,
   getDocs,
@@ -42,7 +43,8 @@ export default function SubjectCatalogPage() {
   const [rawSubjects, setRawSubjects] = useState<any[]>([]);
   const [enlistedSubjects, setEnlistedSubjects] = useState<any[]>([]);
   const [enlistmentCounts, setEnlistmentCounts] = useState<Record<string, number>>({});
-  const [enlistmentsLoaded, setEnlistmentsLoaded] = useState(false);
+const [enlistmentsLoaded, setEnlistmentsLoaded] = useState(false);
+const [staleDrafts, setStaleDrafts] = useState<{ id: string; code: string }[]>([]);
 
   // Dynamic Academic Config
   const [currentTerm, setCurrentTerm] = useState("1st Trimester");
@@ -73,7 +75,8 @@ export default function SubjectCatalogPage() {
 
   const [isLoadingCatalog, setIsLoadingCatalog] = useState(true);
   const [toast, setToast] = useState<Toast | null>(null);
-  const autoEnrolled = useRef(false);
+const autoEnrolled = useRef(false);
+const purgedStale = useRef(false);
 
   function showToast(type: Toast["type"], text: string) {
     setToast({ type, text });
@@ -235,7 +238,8 @@ export default function SubjectCatalogPage() {
       collection(db, "enlistments"),
       (snapshot) => {
         const countsBySubjectUser = new Map<string, Set<string>>();
-        const mySubjectsByCode = new Map<string, any>();
+const mySubjectsByCode = new Map<string, any>();
+        const staleByDoc: { id: string; code: string }[] = [];
 
         snapshot.docs.forEach((d) => {
           const data = d.data();
@@ -244,7 +248,15 @@ export default function SubjectCatalogPage() {
           const docTerm = data.enrolledTerm || data.term || "1st Trimester";
           if (!code) return;
 
-          if (docTerm === currentTerm) {
+const docYear = data.schoolYear;
+          const isCurrent = docTerm === currentTerm && (!docYear || docYear === schoolYear);
+
+          // Unconfirmed units from another term or school year are stale drafts
+          if (!isCurrent && uid === userId && data.status !== "Enrolled" && data.source !== "block") {
+            staleByDoc.push({ id: d.id, code });
+          }
+
+          if (isCurrent) {
             if (!countsBySubjectUser.has(code)) {
               countsBySubjectUser.set(code, new Set());
             }
@@ -262,7 +274,8 @@ export default function SubjectCatalogPage() {
         });
 
         setEnlistmentCounts(liveCounts);
-        setEnlistedSubjects(Array.from(mySubjectsByCode.values()));
+setEnlistedSubjects(Array.from(mySubjectsByCode.values()));
+        setStaleDrafts(staleByDoc);
         setEnlistmentsLoaded(true);
       },
       (error) => {
@@ -272,7 +285,7 @@ export default function SubjectCatalogPage() {
     );
 
     return () => unsubscribe();
-  }, [userId, studentLoaded, currentTerm]);
+}, [userId, studentLoaded, currentTerm, schoolYear]);
 
   // 5. Load curriculum for the student's program
   useEffect(() => {
@@ -305,7 +318,9 @@ export default function SubjectCatalogPage() {
 
     const validBlockCodes = new Set(blockSubjects.map((b) => b.code));
     const missing = blockSubjects.filter((b) => !enlistedCodes.has(b.code));
-    const extras = enlistedSubjects.filter((e) => !validBlockCodes.has(e.code));
+const extras = enlistedSubjects.filter(
+      (e) => !validBlockCodes.has(e.code) && e.status !== "Enrolled" && e.source !== "block"
+    );
 
     if (missing.length === 0 && extras.length === 0) return;
 
@@ -321,7 +336,7 @@ export default function SubjectCatalogPage() {
         missing.forEach((m) => {
           const { id: docId, ...rest } = m;
           const nextSlots = Math.max(0, m.slots - 1);
-          batch.set(doc(db, "enlistments", `${userId}_${m.code}`), {
+   batch.set(doc(db, "enlistments", `${userId}_${m.code}`), {
             ...rest,
             slots: nextSlots,
             userId,
@@ -329,7 +344,7 @@ export default function SubjectCatalogPage() {
             schoolYear,
             enlistedAt: now,
             source: "block",
-            status: "Enrolled",
+            status: "Enlisted",
           });
           batch.update(doc(db, "subjects", docId || m.code), {
             slots: nextSlots,
@@ -338,13 +353,37 @@ export default function SubjectCatalogPage() {
 
         await batch.commit();
       } catch (error) {
-        console.error(error);
+console.error(error);
+        console.log("BLOCK DEBUG", {
+          loginEmail: auth.currentUser?.email,
+          userId,
+          missing: missing.map((m) => m.code),
+          extras: extras.map((e) => ({ code: e.code, status: e.status, source: e.source })),
+        });
         autoEnrolled.current = false;
         showToast("error", "Couldn't load your block subjects.");
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [locked, userId, enlistmentsLoaded, isLoadingCatalog, currentTerm, blockSubjects.length]);
+// 7. Discard unconfirmed units from earlier terms / school years before enlisting.
+  // Confirmed ("Enrolled") and block units are kept as academic history.
+  useEffect(() => {
+    if (!userId || !enlistmentsLoaded || isLoadingCatalog || purgedStale.current) return;
+    if (staleDrafts.length === 0) return;
+
+    purgedStale.current = true;
+    (async () => {
+      try {
+        const batch = writeBatch(db);
+        staleDrafts.forEach(({ id }) => batch.delete(doc(db, "enlistments", id)));
+        await batch.commit();
+      } catch (error) {
+        console.error("Failed to discard stale enlistments:", error);
+        purgedStale.current = false;
+      }
+    })();
+  }, [userId, enlistmentsLoaded, isLoadingCatalog, staleDrafts]);
 
   // Add one subject
   async function handleEnlist(subject: any) {
@@ -370,17 +409,33 @@ export default function SubjectCatalogPage() {
       return;
     }
 
+    // Prevent Schedule Time Conflicts
+    const conflict = enlistedSubjects.find(
+      (s) =>
+        s.days &&
+        s.time &&
+        s.days !== "TBA" &&
+        subject.days !== "TBA" &&
+        s.days === subject.days &&
+        s.time === subject.time
+    );
+    if (conflict) {
+      showToast("error", `Schedule Conflict: ${subject.code} overlaps with ${conflict.code} (${conflict.days} ${conflict.time}).`);
+      return;
+    }
+
     const nextSlots = Math.max(0, subject.slots - 1);
     const { id: subjectDocId, ...rest } = subject;
 
     try {
       const batch = writeBatch(db);
-      batch.set(doc(db, "enlistments", `${userId}_${subject.code}`), {
+  batch.set(doc(db, "enlistments", `${userId}_${subject.code}`), {
         ...rest,
         slots: nextSlots,
         userId,
         enrolledTerm: currentTerm,
         schoolYear,
+        status: "Enlisted",
         enlistedAt: new Date().toISOString(),
       });
       batch.update(doc(db, "subjects", subjectDocId || subject.code), {
@@ -396,8 +451,15 @@ export default function SubjectCatalogPage() {
   }
 
   // Drop one subject
-  async function handleDrop(subject: any) {
+async function handleDrop(subject: any) {
     if (locked || !userId) return;
+
+    // Confirmed units can only be reverted by the Registrar
+    const mine = enlistedSubjects.find((s) => s.code === subject.code);
+    if (mine?.status === "Enrolled") {
+      showToast("error", `${subject.code} is already confirmed. Ask the Registrar to revert it first.`);
+      return;
+    }
 
     const catalogMatch = subjects.find((s) => s.code === subject.code);
     const subjectDocId = catalogMatch?.id || subject.code;
@@ -413,7 +475,13 @@ export default function SubjectCatalogPage() {
       );
       const snapshot = await getDocs(q);
       const batch = writeBatch(db);
-      snapshot.forEach((d) => batch.delete(d.ref));
+snapshot.forEach((d) => {
+        const data = d.data();
+        const dTerm = data.enrolledTerm || data.term || "1st Trimester";
+        const sameYear = !data.schoolYear || data.schoolYear === schoolYear;
+        // Only drop this term's unit; earlier terms are academic history
+        if (dTerm === currentTerm && sameYear) batch.delete(d.ref);
+      });
       batch.update(doc(db, "subjects", subjectDocId), {
         slots: nextSlots,
       });
@@ -422,7 +490,24 @@ export default function SubjectCatalogPage() {
       showToast("success", `${subject.code} dropped (${nextSlots}/${maxSlots} slots left).`);
     } catch (error) {
       console.error(error);
-      showToast("error", "Couldn't drop the subject. Please try again.");
+showToast("error", "Couldn't drop the subject. Please try again.");
+
+      // TEMP: remove after debugging
+      try {
+        const dbg = await getDocs(
+          query(collection(db, "enlistments"), where("userId", "==", userId), where("code", "==", subject.code))
+        );
+        console.log("DROP DEBUG", {
+          loginEmail: auth.currentUser?.email,
+          userId,
+          enlistments: dbg.docs.map((d) => ({ id: d.id, status: d.data().status, source: d.data().source, userId: d.data().userId })),
+          subjectDocId,
+          nextSlots,
+          maxSlots,
+        });
+      } catch (e) {
+        console.log("DROP DEBUG failed", e);
+      }
     }
   }
 
@@ -455,12 +540,13 @@ export default function SubjectCatalogPage() {
       recToAdd.forEach((s) => {
         const { id: subjectDocId, ...rest } = s;
         const nextSlots = Math.max(0, s.slots - 1);
-        batch.set(doc(db, "enlistments", `${userId}_${s.code}`), {
+     batch.set(doc(db, "enlistments", `${userId}_${s.code}`), {
           ...rest,
           slots: nextSlots,
           userId,
           enrolledTerm: currentTerm,
           schoolYear,
+          status: "Enlisted",
           enlistedAt: now,
         });
         batch.update(doc(db, "subjects", subjectDocId || s.code), {
@@ -498,7 +584,7 @@ export default function SubjectCatalogPage() {
 
       snapshot.forEach((d) => {
         const dTerm = d.data().enrolledTerm || d.data().term || "1st Trimester";
-        if (dTerm === currentTerm) batch.delete(d.ref);
+if (dTerm === currentTerm && (!d.data().schoolYear || d.data().schoolYear === schoolYear)) batch.delete(d.ref);
       });
       droppedCodes.forEach((code) => {
         const catalogMatch = subjects.find((s) => s.code === code);
@@ -675,6 +761,43 @@ export default function SubjectCatalogPage() {
               terms={TERMS}
             />
           )}
+{/* Finalize & Official EAF Callout Bar */}
+          {enlistedSubjects.length > 0 && (() => {
+            const isAllEnrolled = enlistedSubjects.every((s) => s.status === "Enrolled");
+            return (
+              <div className="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4 border border-emerald-900/20 border-l-4 border-l-emerald-800 bg-white px-5 py-4 shadow-xs">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-bold text-emerald-950">
+                      {isAllEnrolled
+                        ? `Officially Enrolled for ${currentTerm} (${enlistedSubjects.length} Courses • ${currentUnits} Units)`
+                        : `Ready to Finalize Your ${currentTerm} Load? (${enlistedSubjects.length} Courses • ${currentUnits} Units)`}
+                    </p>
+                    <span
+                      className={`border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
+                        isAllEnrolled
+                          ? "border-emerald-800 bg-emerald-900 text-white"
+                          : "border-amber-300 bg-amber-50 text-amber-900"
+                      }`}
+                    >
+                      {isAllEnrolled ? "EAF: Enrolled" : "EAF: Enlisted"}
+                    </span>
+                  </div>
+                  <p className="mt-0.5 text-xs text-zinc-600">
+                    {isAllEnrolled
+                      ? "Your tuition payment has been verified by the Registrar. You can view or print your validated EAF anytime."
+                      : "Proceed to your Enrollment Assessment Form (EAF) to view your tuition assessment, submit your payment reference, and await Registrar confirmation."}
+                  </p>
+                </div>
+                <Link
+                  href="/eaf"
+                  className="shrink-0 inline-flex items-center justify-center gap-2 border-l-4 border-emerald-400 bg-emerald-900 px-4 py-2.5 text-xs font-bold uppercase tracking-wider text-white hover:bg-emerald-800"
+                >
+                  {isAllEnrolled ? "View / Print Validated EAF →" : "Finalize & View Official EAF →"}
+                </Link>
+              </div>
+            );
+          })()}
 
           {/* Category Tabs */}
           <div className="mb-5 flex overflow-x-auto no-scrollbar border-b border-zinc-300">
