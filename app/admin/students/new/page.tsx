@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { Suspense, useState, useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { doc, setDoc, getDoc, collection, getDocs } from "firebase/firestore";
@@ -305,6 +305,20 @@ function Select({
 }
 
 export default function CreateStudentProfilePage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex min-h-screen items-center justify-center bg-[#F8FAF9] text-sm font-semibold text-emerald-900">
+          Loading...
+        </div>
+      }
+    >
+      <CreateStudentProfileContent />
+    </Suspense>
+  );
+}
+
+function CreateStudentProfileContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const editStudentId = searchParams.get("studentId");
